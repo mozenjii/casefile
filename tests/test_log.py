@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
 
@@ -120,3 +120,9 @@ def test_a_stored_payload_that_is_not_an_object_is_refused_on_read(
         connection.execute("UPDATE events SET payload = '[1]'")
     with pytest.raises(ValueError, match="not a JSON object"):
         log.read("a")
+
+
+def test_recorded_at_is_stored_in_utc_whatever_the_clock_zone(db_path: Path) -> None:
+    karachi = timezone(timedelta(hours=5))
+    with EventLog(db_path, clock=lambda: datetime(2026, 1, 2, 8, 4, 5, tzinfo=karachi)) as zoned:
+        assert zoned.append("a", "T", {}).recorded_at == "2026-01-02T03:04:05+00:00"

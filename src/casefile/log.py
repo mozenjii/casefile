@@ -10,7 +10,8 @@ Three properties matter and each is enforced by the database, not by convention:
   write lock, so two writers cannot both append event 5. A writer that decided on stale state says
   so with ``expected_seq`` and gets ``AppendConflict``; it must re-read, never retry blindly.
 
-The clock is injected so tests are deterministic and so ``recorded_at`` is always timezone-aware.
+The clock is injected so tests are deterministic. ``recorded_at`` is stored in UTC whatever zone the
+clock reports, and a naive clock is refused.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import dataclasses
 import json
 import sqlite3
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Self, cast
@@ -134,7 +135,7 @@ class EventLog:
                 schema_version=schema_version,
                 step_id=step_id,
                 payload=json.loads(payload_text),
-                recorded_at=now.isoformat(),
+                recorded_at=now.astimezone(UTC).isoformat(),
                 prev_hash=prev_hash,
                 hash="",
             )
