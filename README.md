@@ -2,7 +2,7 @@
 
 A workflow for reviewing healthcare authorization cases with AI helpers. It survives crashes, stays inside a budget, and never releases a decision without a human sign-off.
 
-> **Status:** early. The durable core works: the event log, the step executor with its outbox, and the crash matrix, run on a small toy case. There are no agents, approvals or budgets yet. A result appears in the table below only once a script in this repo produces it. All cases are synthetic; no real patient or claim data is used anywhere in this repo.
+> **Status:** early. The durable core works (the event log, the step executor with its outbox, and the crash matrix, run on a small toy case), and so do approvals and the real-data scan. There are no agents, budgets or review screen yet. A result appears in the table below only once a script in this repo produces it. All cases are synthetic; no real patient or claim data is used anywhere in this repo.
 
 ## The problem
 
@@ -25,7 +25,7 @@ Kill the process at every step boundary and check that the resumed case ends up 
 | Correct resume after a kill at every step | Crash matrix (`scripts/crash_matrix.py`) | 15 of 15 crash points on the four-step toy case; the full workflow is not built yet |
 | Runs stopped at the budget with a recorded reason | Budget exhaustion tests | not measured |
 | Quality per dollar: multi-agent vs single agent vs fixed workflow | Same synthetic cases | not measured |
-| Any path to release without approval | Property tests over random event orders | not measured |
+| Any path to release without approval | Property tests over random event orders (`tests/test_release_properties.py`) | none found in 300 generated sequences of up to 25 review events per run |
 
 ## Design notes
 
@@ -36,6 +36,10 @@ Kill the process at every step boundary and check that the resumed case ends up 
 **Crash for real.** The crash matrix runs the case once to list every point where a crash would leave work half-done. Then, for each point, it starts a fresh process, kills it there with `os._exit` (no cleanup, no flush), resumes it in a new process, and compares the log, the effects at the destination and the hash chain with the uninterrupted run.
 
 **Record the side effect before performing it.** An outbox entry is written first and executed after, with an idempotency key, so a retry after a crash can't send the same request for information twice.
+
+**An approval is bound to exactly what the reviewer saw.** The reviewer is shown the dossier along with its hash, and their decision records that hash. Release is allowed only when the latest decision on the *current* dossier's hash is an approval. If someone edits the dossier after it was approved, the hash changes and the old approval simply stops matching. There's no "reset the approval" code to forget on some new edit path. The rule lives in the fold that every read of a case goes through, and every event is checked against it before it's written, so a log that releases without a matching approval can't exist. A property test throws random revisions, stale and made-up decisions, and release attempts at it, and checks the result against a separately written statement of the rule.
+
+**Synthetic data that's provably fake.** A scanner that flags every nine-digit number gets switched off within a week. This one knows the ranges that are never issued: SSNs with area 000 or 666, phone numbers 555-0100 to 555-0199, the example.com domains, the card networks' test numbers. The build fails on any identifier in the repo that falls outside them, and the failure names the file and line but never the value. On its first run it caught a real-looking phone number in one of my own tests.
 
 **Ground truth by construction.** A small rules engine defines the policy criteria for a made-up procedure. A generator writes the clinical documents with controlled gaps and contradictions, and the correct recommendation is computed from the rules, so every case comes with a label.
 
@@ -54,7 +58,7 @@ uv run python scripts/crash_matrix.py # the crash matrix as a table
 ## Roadmap
 
 - [x] Case state machine, event log and crash-resume tests
-- [ ] Approval gates and audit trail
+- [x] Approval gates and audit trail
 - [ ] Synthetic case generator with a rules engine
 - [ ] Supervisor and specialists, review screen and timeline
 - [ ] Fault injection and baseline comparison
