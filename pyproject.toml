@@ -49,6 +49,8 @@ convention = "google"
 "tests/**" = ["D103", "S101"]
 # The check runner shells out to the tools it runs, with fixed argument lists.
 "scripts/**" = ["S603", "S607"]
+# The crash matrix starts the current interpreter with fixed code and paths it created itself.
+"src/casefile/crash_matrix.py" = ["S603"]
 
 [tool.pyright]
 include = ["src", "tests", "scripts"]
