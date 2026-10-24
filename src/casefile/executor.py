@@ -14,8 +14,9 @@ The rules, each of which the crash matrix tests:
   stops: the input changed, and resending the old request or sending a new one blindly would both
   be wrong.
 
-Every append passes the seq the runner last saw, so a second runner on the same case fails with
-``AppendConflict`` instead of interleaving its history with this one's.
+Every append is judged by the fold before it is written, and passes the seq the runner last saw, so
+a second runner on the same case fails with ``AppendConflict`` instead of interleaving its history
+with this one's.
 """
 
 from __future__ import annotations
@@ -24,9 +25,10 @@ from collections.abc import Callable, Mapping
 from typing import Protocol
 
 from casefile.canonical import JsonValue, canonical_json, sha256_hex
+from casefile.cases import append_checked, load
 from casefile.faults import CrashPoint, Faults, NoFaults
 from casefile.log import EventLog
-from casefile.state import CaseState, EventType, apply, fold
+from casefile.state import CaseState, EventType
 
 type Call = Callable[[JsonValue], JsonValue]
 """A model or tool: request in, response out. Both must be canonical JSON values."""
@@ -62,8 +64,7 @@ class Runner:
         self._log = log
         self._case_id = case_id
         self._faults: Faults = faults if faults is not None else NoFaults()
-        events = log.read(case_id)
-        self._state: CaseState | None = fold(events) if events else None
+        self._state: CaseState | None = load(log, case_id)
 
     @property
     def state(self) -> CaseState:
@@ -104,12 +105,8 @@ class Runner:
     def _append(
         self, kind: EventType, payload: Mapping[str, JsonValue], step_id: str | None = None
     ) -> None:
-        """Append an event fenced on the last seq seen, then advance the in-memory state."""
-        expected = 0 if self._state is None else self._state.last_seq
-        event = self._log.append(
-            self._case_id, kind, payload, step_id=step_id, expected_seq=expected
-        )
-        self._state = apply(self._state, event)
+        """Append an event the fold accepts, fenced on the last seq seen, and advance the state."""
+        self._state = append_checked(self._log, self._case_id, self._state, kind, payload, step_id)
 
 
 class StepContext:

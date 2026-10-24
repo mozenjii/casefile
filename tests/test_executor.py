@@ -18,7 +18,7 @@ from casefile.executor import ChangedInput, Runner, StepContext
 from casefile.fakes import FakeDestination, FakeModel, Ledger
 from casefile.faults import CrashPoint, Faults, HitRecorder, RaiseAt, SimulatedCrash
 from casefile.log import AppendConflict, EventLog
-from casefile.state import CaseState
+from casefile.state import CaseState, FoldError
 
 NOW = datetime(2026, 1, 2, tzinfo=UTC)
 
@@ -163,3 +163,13 @@ def test_a_second_runner_on_the_same_case_cannot_interleave(world: World) -> Non
 def test_state_before_opening_is_an_error(world: World) -> None:
     with pytest.raises(RuntimeError, match="has not been opened"):
         _ = Runner(world.log, "c").state
+
+
+def test_an_event_the_fold_would_refuse_is_never_written(world: World) -> None:
+    world.run()
+    before = world.content()
+    runner = Runner(world.log, "c")
+    with pytest.raises(FoldError, match="after the case completed"):
+        runner.step("late/1", lambda _: "too late")
+    assert world.content() == before
+    assert Runner(world.log, "c").state.completed
