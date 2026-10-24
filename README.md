@@ -2,7 +2,7 @@
 
 A workflow for reviewing healthcare authorization cases with AI helpers. It survives crashes, stays inside a budget, and never releases a decision without a human sign-off.
 
-> **Status:** early. I'm at the design stage and there is no released code yet. The results table below stays empty until a script in this repo produces the numbers. All cases are synthetic; no real patient or claim data is used anywhere in this repo.
+> **Status:** early. The durable core works: the event log, the step executor with its outbox, and the crash matrix, run on a small toy case. There are no agents, approvals or budgets yet. A result appears in the table below only once a script in this repo produces it. All cases are synthetic; no real patient or claim data is used anywhere in this repo.
 
 ## The problem
 
@@ -22,14 +22,18 @@ Kill the process at every step boundary and check that the resumed case ends up 
 
 | Measurement | How | Result |
 |---|---|---|
-| Correct resume after a kill at every step | Crash matrix | not measured |
+| Correct resume after a kill at every step | Crash matrix (`scripts/crash_matrix.py`) | 15 of 15 crash points on the four-step toy case; the full workflow is not built yet |
 | Runs stopped at the budget with a recorded reason | Budget exhaustion tests | not measured |
 | Quality per dollar: multi-agent vs single agent vs fixed workflow | Same synthetic cases | not measured |
 | Any path to release without approval | Property tests over random event orders | not measured |
 
 ## Design notes
 
-**The log is the state.** Every step appends an event, and a case's state is a fold over its events. Recovery is replay. Model outputs are recorded in the log, so replaying a case doesn't call the model again and gives the same result.
+**The log is the state.** Every step appends an event, and a case's state is a fold over its events. Recovery is replay. Model outputs are recorded in the log, so replaying a case doesn't call the model again and gives the same result. The one exception can't be designed away: a call that returned but hadn't been recorded when the process died gets made again. The crash matrix counts those repeats instead of hiding them.
+
+**Each event carries the hash of the one before it.** Edit one byte of a stored event, drop one, or reorder them, and the verifier names the first event where the chain breaks. The table also refuses `UPDATE` and `DELETE` at the database level.
+
+**Crash for real.** The crash matrix runs the case once to list every point where a crash would leave work half-done. Then, for each point, it starts a fresh process, kills it there with `os._exit` (no cleanup, no flush), resumes it in a new process, and compares the log, the effects at the destination and the hash chain with the uninterrupted run.
 
 **Record the side effect before performing it.** An outbox entry is written first and executed after, with an idempotency key, so a retry after a crash can't send the same request for information twice.
 
@@ -37,9 +41,19 @@ Kill the process at every step boundary and check that the resumed case ends up 
 
 **Honest baselines.** More agents isn't automatically better. If a fixed workflow matches the agentic version at lower cost, the write-up says so.
 
+## Running it
+
+Needs Python 3.12 and [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync
+uv run python scripts/check.py        # format, lint, types, tests with coverage
+uv run python scripts/crash_matrix.py # the crash matrix as a table
+```
+
 ## Roadmap
 
-- [ ] Case state machine, event log and crash-resume tests
+- [x] Case state machine, event log and crash-resume tests
 - [ ] Approval gates and audit trail
 - [ ] Synthetic case generator with a rules engine
 - [ ] Supervisor and specialists, review screen and timeline
