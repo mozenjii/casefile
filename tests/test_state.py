@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -123,3 +124,71 @@ def test_apply_refuses_another_cases_event(log: EventLog, tmp_path: Path) -> Non
     stranger = log.append("other", E.CASE_OPENED, {"inputs": {}})
     with pytest.raises(FoldError, match="event for case 'other'"):
         apply(state, dataclasses.replace(stranger, seq=2))
+
+
+# Review and release. CLOSE's outcome, the string "approve", is the dossier; its hash is computed
+# here independently of the fold.
+DOSSIER_HASH = hashlib.sha256(b'"approve"').hexdigest()
+REVISED_HASH = hashlib.sha256(b'{"note":"edited"}').hexdigest()
+REVISE: Spec = (E.DOSSIER_REVISED, None, {"dossier": {"note": "edited"}, "editor": "human:ana"})
+UNREVISE: Spec = (E.DOSSIER_REVISED, None, {"dossier": "approve", "editor": "human:ana"})
+BASE: list[Spec] = [OPEN, START, DONE, CLOSE]
+
+
+def decide(decision: str, seen: str = DOSSIER_HASH, reviewer: str = "human:ana") -> Spec:
+    """A reviewer's decision on the dossier with hash ``seen``."""
+    payload: dict[str, JsonValue] = {
+        "decision": decision,
+        "dossier_hash": seen,
+        "reviewer": reviewer,
+    }
+    return (E.REVIEWER_DECISION, None, payload)
+
+
+def release(named: str = DOSSIER_HASH) -> Spec:
+    """A release of the dossier with hash ``named``."""
+    return (E.CASE_RELEASED, None, {"dossier_hash": named})
+
+
+def test_an_approved_dossier_can_be_released(log: EventLog) -> None:
+    state = fold(write(log, [*BASE, decide("approve"), release()]))
+    assert state.dossier_hash == DOSSIER_HASH
+    assert state.approved
+    assert state.released
+
+
+def test_there_is_no_dossier_hash_before_the_run_completes(log: EventLog) -> None:
+    assert fold(write(log, [OPEN, START])).dossier_hash is None
+
+
+def test_revising_back_to_the_approved_content_restores_the_approval(log: EventLog) -> None:
+    state = fold(write(log, [*BASE, decide("approve"), REVISE, UNREVISE, release()]))
+    assert state.released
+
+
+def test_a_stale_decision_is_kept_but_authorizes_nothing(log: EventLog) -> None:
+    state = fold(write(log, [*BASE, REVISE, decide("approve")]))
+    assert state.decisions == {DOSSIER_HASH: "approve"}
+    assert not state.approved
+
+
+REFUSED_REVIEWS: list[tuple[list[Spec], str]] = [
+    ([*BASE, release()], "without an approval"),
+    ([*BASE, decide("approve"), REVISE, release()], "not the current dossier"),
+    ([*BASE, decide("approve"), REVISE, release(REVISED_HASH)], "without an approval"),
+    ([*BASE, decide("approve"), decide("reject"), release()], "without an approval"),
+    ([*BASE, decide("approve"), decide("request_info"), release()], "without an approval"),
+    ([*BASE, decide("approve", reviewer="agent:drafter")], "must be a human"),
+    ([*BASE, decide("approve", reviewer="human:")], "must be a human"),
+    ([*BASE, decide("rubber-stamp")], "unknown decision"),
+    ([OPEN, START, decide("approve")], "before there is a dossier"),
+    ([*BASE, decide("approve"), release(), REVISE], "after the case was released"),
+    ([*BASE, decide("approve"), release(), release()], "after the case was released"),
+    ([*BASE, START], "after the case completed"),
+]
+
+
+@pytest.mark.parametrize(("specs", "message"), REFUSED_REVIEWS)
+def test_impossible_reviews_are_refused(log: EventLog, specs: list[Spec], message: str) -> None:
+    with pytest.raises(FoldError, match=message):
+        fold(write(log, specs))

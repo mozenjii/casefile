@@ -7,8 +7,14 @@ that was never intended, anything after the case closed, a type or schema versio
 not know) raises ``FoldError`` rather than being skipped. Skipping would let a damaged or forged log
 fold into a plausible-looking state.
 
-The vocabulary here is the durable core's: opening a case, steps, recorded calls, outbox effects
-and completion. Review decisions and budgets join it in later work.
+The automated run ends with ``CaseCompleted``, whose outcome is the dossier a human reviews. After
+that only review events are allowed: a human revision of the dossier, a reviewer's decision, and
+release. Release is where the fold earns its strictness. ``CaseReleased`` is refused unless the
+dossier it names is the current one *and* the latest decision on that exact dossier is an approval.
+Decisions are keyed by the dossier's hash, so editing the dossier after an approval leaves the
+approval attached to the old content: it no longer matches, and no code has to invalidate it.
+Since every reader of state goes through this fold, a log that releases without a matching approval
+cannot be read at all.
 """
 
 from __future__ import annotations
@@ -17,7 +23,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
-from casefile.canonical import JsonValue
+from casefile.canonical import JsonValue, canonical_json, sha256_hex
 from casefile.events import Event, first_broken_link
 
 
@@ -31,7 +37,18 @@ class EventType(StrEnum):
     EFFECT_INTENDED = "EffectIntended"
     EFFECT_CONFIRMED = "EffectConfirmed"
     CASE_COMPLETED = "CaseCompleted"
+    DOSSIER_REVISED = "DossierRevised"
+    REVIEWER_DECISION = "ReviewerDecision"
+    CASE_RELEASED = "CaseReleased"
 
+
+REVIEW_EVENTS = frozenset(
+    {EventType.DOSSIER_REVISED, EventType.REVIEWER_DECISION, EventType.CASE_RELEASED}
+)
+"""The only events allowed once the automated run has completed, and not before."""
+
+DECISIONS = ("approve", "reject", "request_info")
+"""What a reviewer can decide about a dossier."""
 
 SCHEMA_VERSION = 1
 """The only payload schema version this code reads. A newer one fails closed."""
@@ -61,6 +78,18 @@ class CaseState:
     confirmed: Mapping[str, JsonValue] = field(default_factory=dict[str, JsonValue])
     completed: bool = False
     outcome: JsonValue = None
+    decisions: Mapping[str, str] = field(default_factory=dict[str, str])
+    released: bool = False
+
+    @property
+    def dossier_hash(self) -> str | None:
+        """The hash of the current dossier (the outcome), or None before the run completes."""
+        return sha256_hex(canonical_json(self.outcome)) if self.completed else None
+
+    @property
+    def approved(self) -> bool:
+        """Say whether the latest decision on the current dossier is an approval."""
+        return self.dossier_hash is not None and self.decisions.get(self.dossier_hash) == "approve"
 
     def in_progress(self, step_id: str) -> bool:
         """Say whether ``step_id`` has started and not yet completed."""
@@ -99,8 +128,12 @@ def apply(state: CaseState | None, event: Event) -> CaseState:
         return CaseState(case_id=event.case_id, last_seq=event.seq, inputs=_object(event, "inputs"))
     if event.case_id != state.case_id:
         raise FoldError(f"seq {event.seq}: event for case {event.case_id!r} in {state.case_id!r}")
-    if state.completed:
+    if state.released:
+        raise FoldError(f"seq {event.seq}: {kind} after the case was released")
+    if state.completed and kind not in REVIEW_EVENTS:
         raise FoldError(f"seq {event.seq}: {kind} after the case completed")
+    if not state.completed and kind in REVIEW_EVENTS:
+        raise FoldError(f"seq {event.seq}: {kind} before there is a dossier to review")
     return replace(_APPLY[kind](state, event), last_seq=event.seq)
 
 
@@ -170,6 +203,31 @@ def _case_completed(state: CaseState, event: Event) -> CaseState:
     return replace(state, completed=True, outcome=_value(event, "outcome"))
 
 
+def _dossier_revised(state: CaseState, event: Event) -> CaseState:
+    _human(event, "editor")
+    return replace(state, outcome=_value(event, "dossier"))
+
+
+def _reviewer_decision(state: CaseState, event: Event) -> CaseState:
+    _human(event, "reviewer")
+    decision = _text(event, "decision")
+    if decision not in DECISIONS:
+        raise FoldError(f"seq {event.seq}: unknown decision {decision!r}")
+    # A decision on a stale dossier is kept, because it is what the reviewer did, but it is filed
+    # under the hash they saw, so it can never authorize a different dossier.
+    seen = _text(event, "dossier_hash")
+    return replace(state, decisions={**state.decisions, seen: decision})
+
+
+def _case_released(state: CaseState, event: Event) -> CaseState:
+    named = _text(event, "dossier_hash")
+    if named != state.dossier_hash:
+        raise FoldError(f"seq {event.seq}: release names {named[:12]}, not the current dossier")
+    if not state.approved:
+        raise FoldError(f"seq {event.seq}: release without an approval of this exact dossier")
+    return replace(state, released=True)
+
+
 _APPLY = {
     EventType.CASE_OPENED: _opened_twice,
     EventType.STEP_STARTED: _step_started,
@@ -178,6 +236,9 @@ _APPLY = {
     EventType.EFFECT_INTENDED: _effect_intended,
     EventType.EFFECT_CONFIRMED: _effect_confirmed,
     EventType.CASE_COMPLETED: _case_completed,
+    EventType.DOSSIER_REVISED: _dossier_revised,
+    EventType.REVIEWER_DECISION: _reviewer_decision,
+    EventType.CASE_RELEASED: _case_released,
 }
 
 
@@ -217,3 +278,11 @@ def _object(event: Event, name: str) -> Mapping[str, JsonValue]:
     if not isinstance(value, dict):
         raise FoldError(f"seq {event.seq}: {event.type} field {name!r} must be an object")
     return value
+
+
+def _human(event: Event, name: str) -> str:
+    """Return a ``human:<id>`` actor field. Agents run steps; only people revise or decide."""
+    actor = _text(event, name)
+    if not actor.startswith("human:") or actor == "human:":
+        raise FoldError(f"seq {event.seq}: {event.type} {name} must be a human, got {actor!r}")
+    return actor
