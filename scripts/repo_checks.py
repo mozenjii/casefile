@@ -8,6 +8,9 @@ Two rules from the quality bar are enforced here:
   the same text inside a string literal (a test fixture, say) is not flagged.
 * Relative links in the public Markdown resolve. A README that points at a moved file is the first
   thing a reader notices.
+* No published file holds an identifier that could belong to a real person. Synthetic data uses
+  ranges reserved for fiction; anything outside them fails the build. Findings name the kind and
+  the place, never the value, so the build log does not repeat the leak.
 
 Both functions are pure over the files they are given and return findings instead of printing, so
 the runner decides how to report and the tests can assert on exact results.
@@ -23,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeGuard
 from urllib.parse import unquote
+
+from casefile.identifiers import find_identifiers
 
 _SUPPRESSION_COMMENTS = re.compile(
     r"#\s*(noqa\b|type:\s*ignore\b|pyright:\s*ignore\b|pragma:\s*no\s*cover\b)", re.IGNORECASE
@@ -122,4 +127,22 @@ def find_broken_links(path: Path) -> list[Finding]:
             if not (path.parent / relative).exists():
                 findings.append(Finding(path, number, f"broken link '{target}'"))
 
+    return findings
+
+
+def find_real_identifiers(path: Path) -> list[Finding]:
+    """Return a finding for each possibly real personal identifier in one text file.
+
+    Files that are not UTF-8 text (images, binaries) are skipped; they cannot be scanned this way
+    and the repository has none that carry case data.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return []
+    findings: list[Finding] = []
+    for found in find_identifiers(text):
+        if found.possibly_real:
+            line = text.count("\n", 0, found.start) + 1
+            findings.append(Finding(path, line, f"possibly real {found.kind}"))
     return findings

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repo_checks import Finding, find_broken_links, find_suppressions
+from repo_checks import Finding, find_broken_links, find_real_identifiers, find_suppressions
 
 
 def write(directory: Path, name: str, text: str) -> Path:
@@ -119,3 +119,18 @@ def test_finding_prints_as_a_clickable_location(tmp_path: Path) -> None:
     source = write(tmp_path, "bad.py", "import os  # noqa\n")
     (finding,) = find_suppressions(source)
     assert str(finding).endswith("bad.py:1: suppression comment 'noqa'")
+
+
+def test_possibly_real_identifiers_are_found_without_echoing_them(tmp_path: Path) -> None:
+    real = "-".join(("123", "45", "6789"))
+    fictional = "-".join(("212", "555", "0142"))
+    case = write(tmp_path, "case.json", f'{{"phone": "{fictional}",\n "ssn": "{real}"}}\n')
+    (finding,) = find_real_identifiers(case)
+    assert (finding.line, finding.message) == (2, "possibly real ssn")
+    assert real not in str(finding)
+
+
+def test_binary_files_are_skipped_by_the_identifier_scan(tmp_path: Path) -> None:
+    image = tmp_path / "logo.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe")
+    assert find_real_identifiers(image) == []

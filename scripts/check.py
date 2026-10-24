@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from repo_checks import Finding, find_broken_links, find_suppressions
+from repo_checks import Finding, find_broken_links, find_real_identifiers, find_suppressions
 
 ROOT = Path(__file__).resolve().parent.parent
 PYTHON_DIRS = ("src", "tests", "scripts")
@@ -39,6 +39,18 @@ def public_markdown() -> list[Path]:
 def python_sources() -> list[Path]:
     """Return every Python file under the directories the gates cover."""
     return sorted(path for name in PYTHON_DIRS for path in (ROOT / name).rglob("*.py"))
+
+
+def publishable_files() -> list[Path]:
+    """Return every file git would publish: tracked ones and new ones that are not ignored."""
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return [ROOT / name for name in listed.split("\0") if name and (ROOT / name).is_file()]
 
 
 def report(findings: Iterable[Finding]) -> bool:
@@ -84,6 +96,10 @@ def gates(include_audit: bool) -> list[tuple[str, Callable[[], bool]]]:
         (
             "doc links",
             lambda: report(f for path in public_markdown() for f in find_broken_links(path)),
+        ),
+        (
+            "real-data scan",
+            lambda: report(f for path in publishable_files() for f in find_real_identifiers(path)),
         ),
         ("types", lambda: run(python, "-m", "pyright")),
         ("tests", lambda: run(python, "-m", "pytest", "--cov", "--cov-report=term-missing")),
