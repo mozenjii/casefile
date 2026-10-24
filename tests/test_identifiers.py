@@ -55,7 +55,7 @@ def test_ssns_are_real_unless_never_issued(value: str, possibly_real: bool) -> N
     ("value", "possibly_real"),
     [
         (phone("212", "867", "5309"), True),
-        ("(212) 867-5309".replace("867", "868"), True),
+        ("(" + "212" + ") " + "868-5309", True),
         (phone("212", "555", "0142"), False),
         (phone("212", "555", "0200"), True),  # only 0100-0199 is reserved for fiction
     ],
