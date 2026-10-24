@@ -1,0 +1,33 @@
+# Runs the same gates as `uv run python scripts/check.py` locally, plus the dependency audit:
+# format, lint, no suppressed checks or skipped tests, public doc links, strict types, tests with an
+# 80% coverage floor, and known advisories against the locked dependencies.
+#
+# Not gated yet, because the thing they would check does not exist:
+#   - browser, accessibility and page-performance checks (there is no review screen yet)
+#   - the crash-resume matrix and the approval property tests (there is no case runner yet)
+#   - audit-chain verification and the scan for real-data patterns (no event log yet)
+#   - Windows; CI runs Linux only, local development happens on Windows
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+      - name: Install the locked environment
+        run: uv sync --locked
+      - name: Run every gate
+        run: uv run python scripts/check.py --audit
