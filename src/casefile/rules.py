@@ -169,6 +169,8 @@ def _parse(observation: Observation) -> object:
     # bool is a subclass of int, so check the exact type: True is not a number of weeks.
     if type(value) is not expected:
         raise ValueError(f"{observation.fact} must be {expected.__name__}, got {value!r}")
+    if isinstance(value, int) and not isinstance(value, bool) and value < 0:
+        raise ValueError(f"{observation.fact} cannot be negative, got {value}")
     return value
 
 

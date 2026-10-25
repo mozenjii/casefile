@@ -76,3 +76,17 @@ def test_a_malformed_date_is_refused() -> None:
 def test_an_unknown_fact_is_refused_before_anything_else() -> None:
     with pytest.raises(ValueError, match="unknown fact 'favourite_colour'"):
         evaluate([Observation("favourite_colour", "blue", "note:1")])
+
+
+def test_a_negative_week_count_is_refused() -> None:
+    with pytest.raises(ValueError, match="cannot be negative"):
+        evaluate([Observation("therapy_weeks", -3, "note:therapy")])
+
+
+def test_one_date_written_two_ways_is_not_a_conflict() -> None:
+    observations = [o for o in COMPLETE if o.fact != "xray_date"]
+    observations += [
+        Observation("xray_date", "2026-02-10", "xray:date"),
+        Observation("xray_date", "20260210", "form:xray"),
+    ]
+    assert reasons(observations)["C3"][0] is Status.MET
