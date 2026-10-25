@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}{{ view.case_id }} · casefile{% endblock %}
+{% block head %}
+<style>
+.grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(260px, .7fr);
+  align-items: start; }
+@media (max-width: 1100px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 700px) {
+  .criteria thead { display: none; }
+  .criteria tr { display: grid; grid-template-columns: 30px 1fr; gap: 4px 8px; padding: 10px 0;
+    border-bottom: 1px solid var(--line); }
+  .criteria td { border: 0; padding: 0; }
+  .criteria td:nth-child(n+3) { grid-column: 2; }
+}
+.summary { font-size: 16px; margin: 0 0 14px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; vertical-align: top; padding: 8px 8px; border-bottom: 1px solid var(--line); }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 650; }
+td.id { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.cite { display: inline-block; margin: 0 4px 4px 0; padding: 0 6px; border-radius: 4px;
+  border: 1px solid var(--line); font-family: var(--mono); font-size: 12px; text-decoration: none; }
+.cite:hover { border-color: var(--accent); }
+.cite { overflow-wrap: anywhere; }
+.docs article + article { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.doc { margin: 0; white-space: pre-wrap; font-family: var(--mono); font-size: 13px; line-height: 1.6; }
+mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1px; }
+mark:target, mark.active { background: var(--mark-target); outline: 2px solid var(--focus); }
+.decide label { display: block; font-weight: 600; margin-bottom: 4px; }
+.decide input[type=text] { width: 100%; padding: 7px 9px; font: inherit; color: var(--text);
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); }
+.actions { display: grid; gap: 8px; margin-top: 12px; }
+button { font: inherit; font-weight: 600; padding: 8px 12px; border-radius: var(--radius);
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer;
+  display: flex; justify-content: space-between; align-items: center; min-height: 40px; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+kbd { font-family: var(--mono); font-size: 12px; padding: 0 5px; border: 1px solid currentColor;
+  border-radius: 3px; opacity: .75; }
+.hash { word-break: break-all; }
+.timeline { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.timeline li { display: grid; grid-template-columns: 26px 62px 1fr; gap: 6px; padding: 5px 0;
+  border-bottom: 1px solid var(--line); }
+.timeline .what { overflow-wrap: anywhere; }
+details { margin-top: 14px; }
+summary { cursor: pointer; font-weight: 600; }
+.stack > * + * { margin-top: 16px; }
+</style>
+{% endblock %}
+{% block body %}
+<header class="bar">
+  <a class="home" href="/">casefile</a>
+  <span class="crumb">/</span>
+  <h1 class="mono">{{ view.case_id }}</h1>
+  {% if dossier.recommendation %}<span class="pill rec-{{ dossier.recommendation }}">Recommended: {{ dossier.recommendation | replace("_", " ") }}</span>{% endif %}
+  <span class="spacer"></span>
+  <span class="pill" id="review-status">{{ status }}</span>
+</header>
+<main class="wrap">
+  {% if error %}<p class="flash error" role="alert">{{ error }}</p>{% endif %}
+  {% if notice %}<p class="flash" role="status">{{ notice }}</p>{% endif %}
+  <div class="grid">
+    <section class="panel" aria-labelledby="dossier-h">
+      <h2 id="dossier-h">Dossier</h2>
+      <p class="summary">{{ dossier.summary or "No summary was drafted." }}</p>
+      <table class="criteria">
+        <caption class="muted" style="text-align:left;padding-bottom:6px">Criteria for SYN-KNEE-MRI (synthetic, not clinical guidance)</caption>
+        <thead><tr><th scope="col">Id</th><th scope="col">Criterion</th><th scope="col">Result</th><th scope="col">Evidence</th></tr></thead>
+        <tbody>
+        {% for row in dossier.criteria %}
+          <tr>
+            <td class="id">{{ row.id }}</td>
+            <td>{{ row.text }}<br><span class="muted">{{ row.reason }}</span></td>
+            <td><span class="status status-{{ row.status }}">{{ row.status | replace("_", " ") }}</span></td>
+            <td>{% for ref in row.evidence %}<a class="cite" href="#{{ anchor(ref) }}" data-target="{{ anchor(ref) }}">{{ ref }}</a>{% else %}<span class="muted">none</span>{% endfor %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% if dossier.requests %}
+      <h3 style="margin-top:16px">Requested from the provider</h3>
+      <ul>{% for item in dossier.requests %}<li>{{ item }}</li>{% endfor %}</ul>
+      {% endif %}
+      <details>
+        <summary>Drafted claims ({{ dossier.claims | length }})</summary>
+        <ul>{% for claim in dossier.claims %}<li>{{ claim.text }} {% for ref in claim.evidence %}<a class="cite" href="#{{ anchor(ref) }}" data-target="{{ anchor(ref) }}">{{ ref }}</a>{% endfor %}</li>{% endfor %}</ul>
+      </details>
+      {% set rejected = dossier.rejected if dossier.rejected is mapping else {} %}
+      {% if rejected.observations or rejected.claims %}
+      <details open>
+        <summary>Rejected by the grounding check ({{ (rejected.observations | length) + (rejected.claims | length) }})</summary>
+        <ul>{% for item in rejected.observations %}<li class="mono">{{ item }}</li>{% endfor %}{% for item in rejected.claims %}<li class="mono">{{ item }}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+    </section>
+
+    <section class="panel docs" aria-labelledby="docs-h">
+      <h2 id="docs-h">Source documents</h2>
+      {% for doc in documents %}
+      <article aria-labelledby="doc-{{ doc.id }}">
+        <h3 id="doc-{{ doc.id }}">{{ doc.title }}</h3>
+        <pre class="doc">{{ doc.html }}</pre>
+      </article>
+      {% endfor %}
+    </section>
+
+    <div class="stack">
+      <section class="panel decide" aria-labelledby="decide-h">
+        <h2 id="decide-h">Decision</h2>
+        {% if view.released %}
+        <p>This dossier has been released.</p>
+        {% else %}
+        <form method="post" action="/cases/{{ view.case_id }}/decision" id="decision-form">
+          <input type="hidden" name="seen_hash" value="{{ view.dossier_hash }}">
+          <label for="reviewer">Reviewer</label>
+          <input type="text" id="reviewer" name="reviewer" required autocomplete="username"
+                 pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]{0,39}" placeholder="your name">
+          <div class="actions">
+            <button type="submit" name="decision" value="approve" class="primary" data-key="a">Approve <kbd>A</kbd></button>
+            <button type="submit" name="decision" value="request_info" data-key="i">Request information <kbd>I</kbd></button>
+            <button type="submit" name="decision" value="reject" data-key="r">Reject <kbd>R</kbd></button>
+          </div>
+        </form>
+        <form method="post" action="/cases/{{ view.case_id }}/release" style="margin-top:12px">
+          <button type="submit" {% if not view.approved %}disabled aria-describedby="release-why"{% endif %}>Release</button>
+          {% if not view.approved %}<p class="muted" id="release-why">Release unlocks once this exact version is approved.</p>{% endif %}
+        </form>
+        {% endif %}
+        {% if view.released %}
+        <p class="muted" style="margin-bottom:0">Released version <span class="mono hash" title="{{ view.dossier_hash }}">{{ view.dossier_hash[:12] }}</span>.</p>
+        {% else %}
+        <p class="muted" style="margin-bottom:0">You are deciding on version <span class="mono hash" title="{{ view.dossier_hash }}">{{ view.dossier_hash[:12] }}</span>. If it changes, an earlier approval stops counting.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel" aria-labelledby="timeline-h">
+        <h2 id="timeline-h">Timeline</h2>
+        <ol class="timeline">
+          {% for item in timeline %}
+          <li><span class="muted">{{ item.seq }}</span><span class="mono muted">{{ item.time }}</span>
+              <span class="what"><strong>{{ item.type }}</strong>{% if item.step %} <span class="mono">{{ item.step }}</span>{% endif %}{% if item.detail %}<br><span class="muted">{{ item.detail }}</span>{% endif %}</span></li>
+          {% endfor %}
+        </ol>
+      </section>
+    </div>
+  </div>
+</main>
+<script>
+document.addEventListener("click", function (event) {
+  var link = event.target.closest("a.cite");
+  if (!link) return;
+  document.querySelectorAll("mark.active").forEach(function (m) { m.classList.remove("active"); });
+  var mark = document.getElementById(link.dataset.target);
+  if (mark) { mark.classList.add("active"); }
+});
+(function rememberReviewer() {
+  var field = document.getElementById("reviewer");
+  if (!field) return;
+  try { field.value = localStorage.getItem("casefile.reviewer") || ""; } catch (e) {}
+  field.addEventListener("change", function () {
+    try { localStorage.setItem("casefile.reviewer", field.value); } catch (e) {}
+  });
+})();
+document.addEventListener("keydown", function (event) {
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  var tag = (event.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea") return;
+  var button = document.querySelector('button[data-key="' + event.key.toLowerCase() + '"]');
+  if (!button) return;
+  event.preventDefault();
+  var reviewer = document.getElementById("reviewer");
+  if (reviewer && !reviewer.value) { reviewer.focus(); return; }
+  button.click();
+});
+</script>
+{% endblock %}

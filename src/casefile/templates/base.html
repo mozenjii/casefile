@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}casefile{% endblock %}</title>
+<style>
+:root {
+  --bg: #f6f5f2; --surface: #ffffff; --line: #e3e0d8; --text: #1d1f21; --muted: #5e6166;
+  --accent: #1f5f8b; --accent-text: #ffffff; --focus: #1f5f8b;
+  --met: #1e6b3a; --met-bg: #e3f1e7; --not-met: #9b2226; --not-met-bg: #f8e3e3;
+  --unknown: #8a5a00; --unknown-bg: #fbefd5; --conflict: #5b3a8c; --conflict-bg: #ece4f7;
+  --mark: #fff1a8; --mark-target: #ffd44d;
+  --radius: 6px; --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a; --surface: #1d2024; --line: #30343a; --text: #e8e6e1; --muted: #a2a6ad;
+    --accent: #6fb1e0; --accent-text: #0b1620; --focus: #8cc4ec;
+    --met: #7fd19a; --met-bg: #183424; --not-met: #f2a0a3; --not-met-bg: #3a1c1e;
+    --unknown: #f0c46a; --unknown-bg: #3a2e14; --conflict: #c7a9f0; --conflict-bg: #2c2340;
+    --mark: #4a4220; --mark-target: #7a6420;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 var(--font); }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 20px;
+  background: var(--surface); border-bottom: 1px solid var(--line); }
+.bar .home { font-weight: 650; text-decoration: none; color: var(--text); }
+.bar .crumb { color: var(--muted); }
+.bar .spacer { flex: 1; }
+h1 { font-size: 17px; margin: 0; font-weight: 650; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  margin: 0 0 10px; font-weight: 650; }
+h3 { font-size: 14px; margin: 0 0 6px; }
+.pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 13px;
+  font-weight: 600; border: 1px solid var(--line); background: var(--surface); }
+.rec-approve { color: var(--met); background: var(--met-bg); border-color: transparent; }
+.rec-deny { color: var(--not-met); background: var(--not-met-bg); border-color: transparent; }
+.rec-request_info { color: var(--unknown); background: var(--unknown-bg); border-color: transparent; }
+.status { display: inline-block; min-width: 76px; padding: 1px 7px; border-radius: 4px;
+  font-size: 12px; font-weight: 650; text-align: center; }
+.status-met { color: var(--met); background: var(--met-bg); }
+.status-not_met { color: var(--not-met); background: var(--not-met-bg); }
+.status-unknown { color: var(--unknown); background: var(--unknown-bg); }
+.status-conflict { color: var(--conflict); background: var(--conflict-bg); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px; }
+.wrap { max-width: 1500px; margin: 0 auto; padding: 16px 20px 40px; }
+.muted { color: var(--muted); }
+.mono { font-family: var(--mono); font-size: 13px; }
+.flash { padding: 10px 14px; border-radius: var(--radius); margin-bottom: 14px;
+  border: 1px solid var(--line); background: var(--surface); }
+.flash.error { border-color: var(--not-met); color: var(--not-met); }
+@media (prefers-reduced-motion: no-preference) { mark { transition: background-color .25s; } }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+{% block body %}{% endblock %}
+</body>
+</html>

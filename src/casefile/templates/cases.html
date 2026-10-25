@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Cases · casefile{% endblock %}
+{% block head %}
+<style>
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+</style>
+{% endblock %}
+{% block body %}
+<header class="bar"><a class="home" href="/">casefile</a><span class="crumb">Synthetic cases</span></header>
+<main class="wrap">
+  <section class="panel" aria-labelledby="cases-h">
+    <h2 id="cases-h">Cases</h2>
+    {% if cases %}
+    <table>
+      <thead><tr><th scope="col">Case</th><th scope="col">Recommendation</th><th scope="col">Status</th></tr></thead>
+      <tbody>
+      {% for case in cases %}
+        <tr>
+          <td><a class="mono" href="/cases/{{ case.id }}">{{ case.id }}</a></td>
+          <td>{% if case.recommendation %}<span class="pill rec-{{ case.recommendation }}">{{ case.recommendation | replace("_", " ") }}</span>{% endif %}</td>
+          <td>{{ case.status }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No cases yet. Run the demo script to generate some.</p>
+    {% endif %}
+  </section>
+  <p class="muted">All cases are generated. The criteria are invented and are not clinical guidance.</p>
+</main>
+{% endblock %}
