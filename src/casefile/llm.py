@@ -28,13 +28,13 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
+from urllib.parse import urlsplit, urlunsplit
 
-from casefile.canonical import JsonValue
+from casefile.canonical import JsonValue, canonical_json
 from casefile.prompts import Prompt, extract_prompt, write_prompt
 from casefile.reference_model import reference_model
 
@@ -112,7 +112,7 @@ class Settings:
     backend: str
     model: str
     base_url: str | None
-    api_key: str | None
+    api_key: str | None = field(repr=False)
     effort: str | None
     price_input: float | None
     price_output: float | None
@@ -143,6 +143,8 @@ def settings_from_env(env: Mapping[str, str] | None = None) -> Settings:
     base_url = values.get("CASEFILE_BASE_URL") or preset.base_url
     if preset.backend == "openai" and base_url is None:
         raise ConfigError(f"provider {name!r} needs an endpoint: set CASEFILE_BASE_URL")
+    if base_url is not None:
+        _check_endpoint(base_url)
 
     api_key = values.get("CASEFILE_API_KEY") or (
         values.get(preset.key_variable) if preset.key_variable else None
@@ -321,18 +323,28 @@ class LanguageModel:
         return {**parsed, "usage": usage}
 
 
+MAX_REPLY_CHARS = 200_000
+"""Replies longer than this are refused unread: nothing the specialists ask for is that long."""
+
+
 def parse_json(text: str) -> JsonValue:
-    """Parse a model's JSON reply, tolerating a Markdown fence around it; None if it is not JSON."""
-    body = text.strip()
-    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", body, re.DOTALL)
-    if fenced:
-        body = fenced.group(1)
-    start, end = body.find("{"), body.rfind("}")
+    """Parse a model's JSON reply, or return None if it is not a recordable JSON object.
+
+    Whatever surrounds the outermost braces (a Markdown fence, a polite sentence) is ignored by
+    slicing, not by a regular expression, so no reply can make parsing slow. A reply that parses
+    but could not be recorded (a float, a number too long to convert, nesting deep enough to blow
+    the stack) is refused here, so it is rejected and recorded instead of crashing the step and
+    being paid for again on every resume.
+    """
+    if len(text) > MAX_REPLY_CHARS:
+        return None
+    start, end = text.find("{"), text.rfind("}")
     if start == -1 or end < start:
         return None
     try:
-        parsed: JsonValue = json.loads(body[start : end + 1])
-    except json.JSONDecodeError:
+        parsed: JsonValue = json.loads(text[start : end + 1])
+        canonical_json(parsed)
+    except (ValueError, RecursionError):  # JSONDecodeError and CanonicalJsonError are ValueErrors
         return None
     return parsed
 
@@ -348,9 +360,29 @@ def build_model(settings: Settings | None = None, http_client: httpx2.Client | N
 
 
 def describe(settings: Settings) -> str:
-    """One line naming the provider and model, never the key."""
-    where = f" at {settings.base_url}" if settings.base_url else ""
+    """One line naming the provider and model, never the key or credentials in the endpoint."""
+    where = f" at {_without_credentials(settings.base_url)}" if settings.base_url else ""
     return f"{settings.provider} ({settings.model}{where})"
+
+
+def _without_credentials(url: str) -> str:
+    """Drop any ``user:password@`` from a URL before it is printed."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+_LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _check_endpoint(url: str) -> None:
+    """Refuse an endpoint that would send the key in the clear to another machine."""
+    parts = urlsplit(url)
+    if parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in _LOOPBACK):
+        return
+    shown = _without_credentials(url)
+    raise ConfigError(f"endpoint {shown!r} must use https (plain http only for this machine)")
 
 
 __all__ = [

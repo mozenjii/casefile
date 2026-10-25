@@ -6,6 +6,8 @@ possibly real identifier for the repository scan to find.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from casefile.identifiers import Identifier, find_identifiers, luhn_valid, redact
@@ -120,3 +122,9 @@ def test_identifiers_carry_their_span() -> None:
 def test_luhn_matches_the_published_example() -> None:
     assert luhn_valid("79927398713")
     assert not luhn_valid("79927398710")
+
+
+def test_a_long_run_without_an_at_sign_is_scanned_quickly() -> None:
+    started = time.perf_counter()
+    assert find_identifiers("a." * 20_000) == []
+    assert time.perf_counter() - started < 0.5

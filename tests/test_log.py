@@ -126,3 +126,29 @@ def test_recorded_at_is_stored_in_utc_whatever_the_clock_zone(db_path: Path) -> 
     karachi = timezone(timedelta(hours=5))
     with EventLog(db_path, clock=lambda: datetime(2026, 1, 2, 8, 4, 5, tzinfo=karachi)) as zoned:
         assert zoned.append("a", "T", {}).recorded_at == "2026-01-02T03:04:05+00:00"
+
+
+def test_a_saved_head_catches_events_cut_off_the_end(log: EventLog, db_path: Path) -> None:
+    for i in range(3):
+        log.append("a", "T", {"i": i})
+    head = log.head("a")
+    assert head is not None
+    assert head[0] == 3
+    assert log.verify("a", head) is None
+    with raw(db_path) as connection:
+        connection.execute("DROP TRIGGER events_no_delete")
+        connection.execute("DELETE FROM events WHERE seq = 3")
+    assert log.verify("a") is None  # the chain alone cannot see a cut tail
+    assert log.verify("a", head) == 3
+    assert log.head("nobody") is None
+
+
+def test_a_saved_head_catches_a_rewritten_event(log: EventLog, db_path: Path) -> None:
+    for i in range(2):
+        log.append("a", "T", {"i": i})
+    head = log.head("a")
+    assert head is not None
+    with raw(db_path) as connection:
+        connection.execute("DROP TRIGGER events_no_update")
+        connection.execute("UPDATE events SET hash = ? WHERE seq = 2", ("0" * 64,))
+    assert log.verify("a", head) == 2

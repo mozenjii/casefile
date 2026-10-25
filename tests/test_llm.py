@@ -8,6 +8,7 @@ response, and no key or network is ever used.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -427,3 +428,61 @@ def test_repository_settings_put_the_shell_over_the_file(
     monkeypatch.delenv("CASEFILE_PROVIDER", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "shell")
     assert settings_for_repository(tmp_path).api_key == "shell"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        '{"observations": [{"fact": "therapy_weeks", "value": 6.5, "quote": "6"}]}',
+        '{"n": ' + "9" * 5000 + "}",
+        "[" * 5000 + "]" * 5000,
+        '{"a": "' + "x" * 210_000 + '"}',
+    ],
+    ids=["float", "huge number", "deep nesting", "oversized"],
+)
+def test_replies_that_cannot_be_recorded_are_refused_not_crashed_on(reply: str) -> None:
+    assert parse_json(reply) is None
+
+
+def test_a_hostile_fence_is_parsed_in_linear_time() -> None:
+    started = time.perf_counter()
+    assert parse_json("```" + " " * 50_000 + "x") is None
+    assert time.perf_counter() - started < 0.5
+
+
+def test_the_key_never_appears_in_settings_output() -> None:
+    settings = settings_from_env({**OPENROUTER, "OPENROUTER_API_KEY": "sk-secret-value"})
+    assert "sk-secret-value" not in repr(settings)
+    assert "sk-secret-value" not in describe(settings)
+
+
+def test_credentials_in_an_endpoint_are_never_printed() -> None:
+    env = {
+        "CASEFILE_PROVIDER": "openai-compatible",
+        "CASEFILE_MODEL": "m",
+        "CASEFILE_API_KEY": "k",
+        "CASEFILE_BASE_URL": "https://alice:hunter2@llm.example.com:8443/v1",
+    }
+    assert (
+        describe(settings_from_env(env))
+        == "openai-compatible (m at https://llm.example.com:8443/v1)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("url", "allowed"),
+    [
+        ("https://llm.example.com/v1", True),
+        ("http://localhost:11434/v1", True),
+        ("http://127.0.0.1:8000/v1", True),
+        ("http://llm.example.com/v1", False),
+        ("ftp://llm.example.com/v1", False),
+    ],
+)
+def test_keys_are_only_sent_over_https_or_to_this_machine(url: str, allowed: bool) -> None:
+    env = {"CASEFILE_PROVIDER": "openai-compatible", "CASEFILE_MODEL": "m", "CASEFILE_API_KEY": "k"}
+    if allowed:
+        assert settings_from_env({**env, "CASEFILE_BASE_URL": url}).base_url == url
+    else:
+        with pytest.raises(ConfigError, match="must use https"):
+            settings_from_env({**env, "CASEFILE_BASE_URL": url})

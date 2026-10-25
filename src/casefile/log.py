@@ -165,9 +165,27 @@ class EventLog:
         rows = self._db.execute(_SELECT_CASE, (case_id,)).fetchall()
         return [_row_to_event(row) for row in rows]
 
-    def verify(self, case_id: str) -> int | None:
-        """Return the ``seq`` of the first event that breaks the hash chain, or None if intact."""
-        return first_broken_link(self.read(case_id))
+    def verify(self, case_id: str, expected_head: tuple[int, str] | None = None) -> int | None:
+        """Return the ``seq`` of the first event that breaks the hash chain, or None if intact.
+
+        The chain alone proves that no event was changed in place. It cannot prove that the newest
+        events were not cut off, or that someone with the file did not rewrite the whole chain.
+        For that, keep a ``head`` somewhere the database cannot reach and pass it back here: a
+        missing or different event at that seq is reported at that seq.
+        """
+        events = self.read(case_id)
+        broken = first_broken_link(events)
+        if broken is not None or expected_head is None:
+            return broken
+        seq, digest = expected_head
+        if len(events) < seq or events[seq - 1].hash != digest:
+            return seq
+        return None
+
+    def head(self, case_id: str) -> tuple[int, str] | None:
+        """The newest event's seq and hash: a checkpoint to store outside the database."""
+        last = self._db.execute(_SELECT_LAST, (case_id,)).fetchone()
+        return None if last is None else (int(last[0]), str(last[1]))
 
     def case_ids(self) -> list[str]:
         """Return every case that has at least one event, sorted."""

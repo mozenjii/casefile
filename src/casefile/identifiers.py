@@ -28,7 +28,9 @@ from dataclasses import dataclass
 
 _SSN = re.compile(r"\b(\d{3})-(\d{2})-(\d{4})\b")
 _PHONE = re.compile(r"(?<!\d)\(?([2-9]\d{2})\)?[-. ]?([2-9]\d{2})[-. ](\d{4})(?!\d)")
-_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})\b")
+# The lookbehind anchors the local part at its true start, so a long run of dots and letters
+# with no @ is scanned once instead of once per starting position.
+_EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})\b")
 _CARD = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 _MBI_LETTER = "AC-HJKMNP-RT-Y"  # A to Z without B, I, L, O, S, Z
 _MBI = re.compile(

@@ -202,14 +202,20 @@ class Budget:
     max_model_calls: int | None = None
     max_cost_microusd: int | None = None
 
-    def refuses(self, state: CaseState, next_call_estimate: int | None) -> str | None:
-        """Say why one more model call would break the budget, or None if it fits."""
-        if self.max_model_calls is not None and state.model_calls + 1 > self.max_model_calls:
+    def refuses(
+        self, state: CaseState, next_call_estimate: int | None, calls: int = 1
+    ) -> str | None:
+        """Say why the next step's ``calls`` model calls could break the budget, or None.
+
+        A step is checked for the most it can spend (an extraction may retry once, so two calls),
+        because a step is never stopped halfway: once started it runs to completion.
+        """
+        if self.max_model_calls is not None and state.model_calls + calls > self.max_model_calls:
             return f"model call limit reached ({state.model_calls} of {self.max_model_calls})"
         if self.max_cost_microusd is not None:
             if next_call_estimate is None or state.cost_unknown:
                 return "a cost limit is set but the model's price is unknown"
-            if state.spent_microusd + next_call_estimate > self.max_cost_microusd:
+            if state.spent_microusd + calls * next_call_estimate > self.max_cost_microusd:
                 spent, limit = dollars(state.spent_microusd), dollars(self.max_cost_microusd)
                 return f"cost limit reached ({spent} spent of {limit})"
         return None
@@ -234,7 +240,7 @@ def run_review(
     rejected: list[JsonValue] = []
     for document in documents:
         step = f"extract/{document.id}"
-        if _stopped(runner, limits, step, _extract_request(document)):
+        if _stopped(runner, limits, step, _extract_request(document), calls=2):
             return _stop(runner, extracted, rejected)
         output = runner.step(step, _extractor(document, model))
         extracted += _list(output, "observations")
@@ -242,7 +248,7 @@ def run_review(
 
     policy = runner.step("policy/1", lambda _: _policy(extracted))
     gaps = runner.step("gaps/1", lambda ctx: _gaps(ctx, runner.state.case_id, policy, destination))
-    if _stopped(runner, limits, "draft/1", _write_request(policy, gaps)):
+    if _stopped(runner, limits, "draft/1", _write_request(policy, gaps), calls=1):
         return _stop(runner, extracted, rejected, policy, gaps)
     draft = runner.step("draft/1", lambda ctx: _writer(ctx, policy, gaps, extracted, model))
 
@@ -258,14 +264,14 @@ def run_review(
     return runner.complete(dossier)
 
 
-def _stopped(runner: Runner, budget: Budget, step: str, request: JsonValue) -> bool:
+def _stopped(runner: Runner, budget: Budget, step: str, request: JsonValue, calls: int) -> bool:
     """Check the budget before a model step; record the stop if it refuses. Replays exactly."""
     state = runner.state
     if state.stopped is not None:
         return True
     if step in state.outputs:
         return False  # already done: a resumed run never re-decides a finished step
-    reason = budget.refuses(state, runner.estimate(request))
+    reason = budget.refuses(state, runner.estimate(request), calls)
     if reason is None:
         return False
     runner.stop(reason)

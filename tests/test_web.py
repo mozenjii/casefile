@@ -188,5 +188,5 @@ def test_a_stopped_case_says_why_and_needs_a_human(tmp_path: Path) -> None:
     ledger.close()
     with TestClient(create_app(path)) as stopped:
         page = stopped.get("/cases/SYN-STOPPED").text
-    assert "Stopped early: model call limit reached (1 of 1)" in page
+    assert "Stopped early: model call limit reached (0 of 1)" in page
     assert "Recommended: needs human" in page

@@ -7,7 +7,7 @@ The grounding check is then tested against models that misreport what a span say
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -339,22 +339,31 @@ def test_reported_values_are_normalised_to_the_fact_type(
 
 
 def budgeted(
-    world: tuple[EventLog, Ledger], case: Case, budget: Budget, estimate: int | None = 250
+    world: tuple[EventLog, Ledger],
+    case: Case,
+    budget: Budget,
+    estimate: int | Callable[[JsonValue], int | None] | None = 250,
 ) -> CaseState:
     """Run ``case`` under ``budget``, pricing every model request at ``estimate``."""
     log, ledger = world
-    runner = Runner(log, case.case_id, estimate=lambda _: estimate)
+    fixed = estimate
+
+    def flat(request: JsonValue) -> int | None:
+        return fixed if not callable(fixed) else fixed(request)
+
+    runner = Runner(log, case.case_id, estimate=flat)
     model = FakeModel(ledger, reference_model)
     return run_review(runner, sources(case), model, FakeDestination(ledger), budget)
 
 
 def test_a_call_limit_stops_the_run_with_what_was_found(world: tuple[EventLog, Ledger]) -> None:
     case = generate(12, "none")
-    state = budgeted(world, case, Budget(max_model_calls=2))
+    state = budgeted(world, case, Budget(max_model_calls=3))
     result = dossier(state)
     assert result["recommendation"] == "needs_human"
-    assert result["stopped"] == "model call limit reached (2 of 2)"
-    assert state.stopped == "model call limit reached (2 of 2)"
+    # Each extraction is checked for two calls (it may retry), so the third is not started.
+    assert result["stopped"] == "model call limit reached (2 of 3)"
+    assert state.stopped == "model call limit reached (2 of 3)"
     ledger = result["evidence"]
     assert isinstance(ledger, dict)
     assert {str(item["document"]) for item in ledger.values() if isinstance(item, dict)} == {
@@ -370,7 +379,7 @@ def test_a_call_limit_stops_the_run_with_what_was_found(world: tuple[EventLog, L
 
 def test_a_cost_limit_counts_what_was_spent(world: tuple[EventLog, Ledger]) -> None:
     case = generate(13, "none")
-    state = budgeted(world, case, Budget(max_cost_microusd=600), estimate=250)
+    state = budgeted(world, case, Budget(max_cost_microusd=800), estimate=250)
     assert state.stopped is not None
     assert state.stopped.startswith("cost limit reached")
     assert state.model_calls == 2
@@ -398,7 +407,11 @@ def test_a_stopped_case_resumes_to_the_same_stop(world: tuple[EventLog, Ledger])
 
 def test_a_limit_can_stop_the_draft_after_the_rules_ran(world: tuple[EventLog, Ledger]) -> None:
     case = generate(17, "missing_xray")
-    result = dossier(budgeted(world, case, Budget(max_model_calls=3)))
+
+    def price(request: JsonValue) -> int:
+        return 100 if isinstance(request, dict) and request.get("task") == "extract" else 10_000
+
+    result = dossier(budgeted(world, case, Budget(max_cost_microusd=1_000), price))
     assert result["recommendation"] == "needs_human"
     criteria = result["criteria"]
     assert isinstance(criteria, list)
