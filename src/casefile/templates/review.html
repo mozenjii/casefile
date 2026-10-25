@@ -112,6 +112,7 @@ summary { cursor: pointer; font-weight: 600; }
         {% else %}
         <form method="post" action="/cases/{{ view.case_id }}/decision" id="decision-form">
           <input type="hidden" name="seen_hash" value="{{ view.dossier_hash }}">
+          <input type="hidden" name="token" value="{{ token }}">
           <label for="reviewer">Reviewer</label>
           <input type="text" id="reviewer" name="reviewer" required autocomplete="username"
                  pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]{0,39}" placeholder="your name">
@@ -122,6 +123,8 @@ summary { cursor: pointer; font-weight: 600; }
           </div>
         </form>
         <form method="post" action="/cases/{{ view.case_id }}/release" style="margin-top:12px">
+          <input type="hidden" name="token" value="{{ token }}">
+          <input type="hidden" name="releaser" id="releaser">
           <button type="submit" {% if not view.approved %}disabled aria-describedby="release-why"{% endif %}>Release</button>
           {% if not view.approved %}<p class="muted" id="release-why">Release unlocks once this exact version is approved.</p>{% endif %}
         </form>
@@ -146,7 +149,7 @@ summary { cursor: pointer; font-weight: 600; }
     </div>
   </div>
 </main>
-<script>
+<script nonce="{{ nonce }}">
 document.addEventListener("click", function (event) {
   var link = event.target.closest("a.cite");
   if (!link) return;
@@ -157,8 +160,11 @@ document.addEventListener("click", function (event) {
 (function rememberReviewer() {
   var field = document.getElementById("reviewer");
   if (!field) return;
+  var releaser = document.getElementById("releaser");
   try { field.value = localStorage.getItem("casefile.reviewer") || ""; } catch (e) {}
-  field.addEventListener("change", function () {
+  if (releaser) { releaser.value = field.value; }
+  field.addEventListener("input", function () {
+    if (releaser) { releaser.value = field.value; }
     try { localStorage.setItem("casefile.reviewer", field.value); } catch (e) {}
   });
 })();

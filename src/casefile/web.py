@@ -14,16 +14,20 @@ recorded as ``human:<name>``. Real users would need authentication before anythi
 
 from __future__ import annotations
 
+import hmac
 import re
-from collections.abc import Callable
+import secrets
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from casefile.canonical import JsonValue
 from casefile.cases import load
@@ -39,13 +43,43 @@ _TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
 _NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}")
 
 
-def create_app(log_path: Path, clock: Callable[[], datetime] | None = None) -> FastAPI:
-    """Build the review app over the event log at ``log_path``."""
+def create_app(
+    log_path: Path,
+    clock: Callable[[], datetime] | None = None,
+    allowed_hosts: Sequence[str] = ("127.0.0.1", "localhost"),
+) -> FastAPI:
+    """Build the review app over the event log at ``log_path``.
+
+    Only requests addressed to ``allowed_hosts`` are served, which defeats DNS rebinding: a
+    hostile page that rebinds its own name to this machine still sends its own name as the host.
+    """
     app = FastAPI(title="casefile review", docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
     now = clock or (lambda: datetime.now(UTC))
+    # A secret only this server knows, embedded in its own forms. A page on another site cannot
+    # read it, so it cannot forge a decision even though dossier hashes are not secret.
+    form_token = secrets.token_urlsafe(32)
 
     def open_log() -> EventLog:
         return EventLog(log_path, clock=now)
+
+    @app.middleware("http")
+    async def security_headers(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        nonce = secrets.token_urlsafe(16)
+        request.state.nonce = nonce
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = _CSP.format(nonce=nonce)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        # Not "no-referrer": with that, browsers send "Origin: null" on form posts and the origin
+        # check in _same_origin would refuse this page's own forms. Found by the browser test.
+        response.headers["Referrer-Policy"] = "same-origin"
+        return response
+
+    def page(request: Request, case_id: str, **extra: Any) -> HTMLResponse:
+        return _page(request, open_log, case_id, form_token, **extra)
 
     @app.get("/", response_class=HTMLResponse)
     def cases(request: Request) -> HTMLResponse:
@@ -55,19 +89,23 @@ def create_app(log_path: Path, clock: Callable[[], datetime] | None = None) -> F
 
     @app.get("/cases/{case_id}", response_class=HTMLResponse)
     def case(request: Request, case_id: str, notice: str = "") -> HTMLResponse:
-        return _page(request, open_log, case_id, notice=notice)
+        return page(request, case_id, notice=notice)
 
     @app.post("/cases/{case_id}/decision")
     def decide(
         request: Request,
         case_id: str,
-        decision: Annotated[str, Form()],
-        seen_hash: Annotated[str, Form()],
+        decision: Annotated[str, Form()] = "",
+        seen_hash: Annotated[str, Form()] = "",
         reviewer: Annotated[str, Form()] = "",
+        token: Annotated[str, Form()] = "",
     ) -> Response:
+        if not _same_origin(request, token, form_token):
+            return PlainTextResponse(_FORGED, status_code=403)
         name = reviewer.strip().lower()
-        if decision not in DECISIONS or not _NAME.fullmatch(name):
-            return _page(request, open_log, case_id, error=_INVALID, status=400)
+        valid_hash = _HASH.fullmatch(seen_hash) is not None
+        if decision not in DECISIONS or not _NAME.fullmatch(name) or not valid_hash:
+            return page(request, case_id, error=_INVALID, status=400)
         with open_log() as log:
             try:
                 view = Review(log).decide(
@@ -76,23 +114,56 @@ def create_app(log_path: Path, clock: Callable[[], datetime] | None = None) -> F
             except NotReviewable as error:
                 raise HTTPException(404, str(error)) from error
             except AppendConflict:
-                return _page(request, open_log, case_id, error=_RACE, status=409)
+                return page(request, case_id, error=_RACE, status=409)
+            except FoldError:
+                return page(request, case_id, error=_CLOSED, status=409)
         stale = decision == "approve" and not view.approved
         notice = "stale" if stale else f"recorded-{decision}"
         return RedirectResponse(f"/cases/{case_id}?notice={notice}", status_code=303)
 
     @app.post("/cases/{case_id}/release")
-    def release(request: Request, case_id: str) -> Response:
+    def release(
+        request: Request,
+        case_id: str,
+        releaser: Annotated[str, Form()] = "",
+        token: Annotated[str, Form()] = "",
+    ) -> Response:
+        if not _same_origin(request, token, form_token):
+            return PlainTextResponse(_FORGED, status_code=403)
+        name = releaser.strip().lower()
+        if not _NAME.fullmatch(name):
+            return page(request, case_id, error=_INVALID, status=400)
         with open_log() as log:
             try:
-                Review(log).release(case_id)
+                Review(log).release(case_id, releaser=f"human:{name}")
             except NotReviewable as error:
                 raise HTTPException(404, str(error)) from error
             except FoldError:
-                return _page(request, open_log, case_id, error=_UNAPPROVED, status=409)
+                return page(request, case_id, error=_UNAPPROVED, status=409)
         return RedirectResponse(f"/cases/{case_id}?notice=released", status_code=303)
 
     return app
+
+
+def _same_origin(request: Request, token: str, expected: str) -> bool:
+    """Accept a form post only with this server's token and, when the browser says, from itself."""
+    if not hmac.compare_digest(token.encode(), expected.encode()):
+        return False
+    if request.headers.get("sec-fetch-site", "same-origin") not in ("same-origin", "none"):
+        return False
+    origin = request.headers.get("origin")
+    return origin is None or urlsplit(origin).netloc == request.headers.get("host")
+
+
+_CSP = (
+    "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src 'self'; "
+    "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+)
+"""No framing (no clickjacking), no script but this page's own, forms post only back here."""
+
+_HASH = re.compile(r"[0-9a-f]{64}")
+_FORGED = "This form did not come from this page. Reload the case and try again."
+_CLOSED = "This case is already released; no further decisions can be recorded."
 
 
 _EMPTY_DOSSIER: dict[str, JsonValue] = {
@@ -122,6 +193,7 @@ def _page(
     request: Request,
     open_log: Callable[[], EventLog],
     case_id: str,
+    form_token: str,
     *,
     notice: str = "",
     error: str = "",
@@ -156,6 +228,8 @@ def _page(
         "notice": _NOTICES.get(notice, ""),
         "error": error,
         "status": _status(view),
+        "token": form_token,
+        "nonce": getattr(request.state, "nonce", ""),
     }
     return _TEMPLATES.TemplateResponse(request, "review.html", context, status_code=status)
 
@@ -166,9 +240,9 @@ def _inputs(events: list[Event]) -> dict[str, JsonValue]:
     return _object(inputs)
 
 
-def anchor(evidence_id: str) -> str:
+def anchor(evidence_id: object) -> str:
     """Turn an evidence id into an HTML id: ``note:therapy_weeks`` → ``ev-note-therapy_weeks``."""
-    return "ev-" + re.sub(r"[^A-Za-z0-9_-]", "-", evidence_id)
+    return "ev-" + re.sub(r"[^A-Za-z0-9_-]", "-", str(evidence_id))
 
 
 def _mark(text: str, document_id: str, evidence: dict[str, JsonValue]) -> Markup:
@@ -191,8 +265,11 @@ def _mark(text: str, document_id: str, evidence: dict[str, JsonValue]) -> Markup
 
 
 def _summary(log: EventLog, case_id: str) -> dict[str, object]:
-    """One row of the case list."""
-    state = load(log, case_id)
+    """One row of the case list; a case whose log does not fold is listed as damaged, not fatal."""
+    try:
+        state = load(log, case_id)
+    except FoldError:
+        return {"id": case_id, "recommendation": "", "status": "unreadable: its log is damaged"}
     if state is None or not state.completed:
         return {"id": case_id, "recommendation": "", "status": "running"}
     outcome = _object(state.outcome)
