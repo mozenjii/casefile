@@ -92,7 +92,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.50" },
     { name = "pydantic", specifier = ">=2.9" },
-    { name = "python-multipart", specifier = ">=0.0.12" },
+    { name = "python-multipart", specifier = ">=0.0.18" },
     { name = "uvicorn", specifier = ">=0.32" },
 ]
 provides-extras = ["anthropic", "openai"]
