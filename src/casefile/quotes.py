@@ -52,22 +52,14 @@ def _date(text: str) -> str | None:
     return None
 
 
-_LABELS = {"red_flag": "Red flags:", "prior_mri": "Prior MRI of this knee:"}
-"""Yes/no facts need context: "none" or a flag's name only counts after its field's label."""
-
-
 def read_in_context(fact: str, text: str, start: int, end: int) -> str | int | bool | None:
-    """Return the value ``text[start:end]`` states for ``fact``, checking its label if it needs one.
+    """Return the value ``text[start:end]`` states for ``fact``, or None if it is not a field value.
 
-    For a yes/no fact, almost any words could be read as "yes", so the span must follow the
-    field's own label on the same line. Without that, a model could point at "Findings" and have
-    it accepted as a red flag.
+    The span must be the whole value of one of the fact's fields (``FIELD_PATTERNS``). Reading the
+    words alone is not enough: almost any fragment can be read as "yes", and any digits as a count.
     """
-    label = _LABELS.get(fact)
-    if label is not None:
-        line_start = text.rfind("\n", 0, start) + 1
-        if not text[line_start:start].rstrip().endswith(label):
-            return None
+    if (start, end) not in fields(fact, text):
+        return None
     return read_quote(fact, text[start:end])
 
 
@@ -94,3 +86,32 @@ def coerce(fact: str, value: str | int | bool) -> str | int | bool | None:
         word = value.strip().lower() if isinstance(value, str) else ""
         return True if word in _TRUE else False if word in _FALSE else None
     return None
+
+
+FIELD_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "request_date": (re.compile(r"^Request date: (?P<v>[^\n]+)$", re.M),),
+    "prior_mri": (re.compile(r"^Prior MRI of this knee: (?P<v>Yes|No)\b", re.M),),
+    "prior_mri_date": (re.compile(r"^Prior MRI of this knee: Yes, on (?P<v>[^\n]+)$", re.M),),
+    "therapy_weeks": (
+        re.compile(r"^Weeks of conservative therapy: (?P<v>\d+)$", re.M),
+        re.compile(r"\bcompleted (?P<v>\d+ weeks?)\b"),
+    ),
+    "symptom_onset": (re.compile(r"\bpain since (?P<v>\d{1,2} [A-Z][a-z]+ \d{4})\b"),),
+    "red_flag": (re.compile(r"^Red flags: (?P<v>[^.\n]+)", re.M),),
+    "xray_date": (re.compile(r"^Examination: X-ray[^\n]*\nDate: (?P<v>[^\n]+)$", re.M),),
+    "referral": (re.compile(r"\AREFERRAL\n.*?\b(?P<v>Referred by)\b", re.S),),
+}
+"""Where each fact is stated in the documents: the labelled field and the exact value span.
+
+A fact is grounded only if the cited words are the *whole* value of one of its fields. A fragment
+("n" out of "none", "2026" out of a date) never is, and a referral only counts inside a referral
+letter. These patterns describe the synthetic documents; real documents would need their own.
+"""
+
+
+def fields(fact: str, text: str) -> list[tuple[int, int]]:
+    """Return the spans in ``text`` that are the whole value of a ``fact`` field."""
+    spans: list[tuple[int, int]] = []
+    for pattern in FIELD_PATTERNS.get(fact, ()):
+        spans.extend(match.span("v") for match in pattern.finditer(text))
+    return sorted(set(spans))

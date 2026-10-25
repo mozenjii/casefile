@@ -113,7 +113,9 @@ def test_reviewing_twice_replays_without_calling_the_model(world: tuple[EventLog
     assert world[1].model_calls() == calls
 
 
-DOC = SourceDocument("xray", "X-ray report", "Date: 3 March 2026\nFindings: none.")
+DOC = SourceDocument(
+    "xray", "X-ray report", "Examination: X-ray, left knee\nDate: 3 March 2026\nFindings: none."
+)
 NOTE = SourceDocument("note", "Clinical note", "Plan: rest.\nRed flags: suspected fracture.\n")
 
 
@@ -125,12 +127,12 @@ def fact(name: str, value: JsonValue, start: JsonValue, end: JsonValue) -> JsonV
 @pytest.mark.parametrize(
     ("observation", "reason"),
     [
-        (fact("xray_date", "2026-03-04", 6, 18), "the span says '3 March 2026', not '2026-03-04'"),
-        (fact("xray_date", "2026-03-03", 0, 4), "the span says 'Date', not '2026-03-03'"),
-        (fact("xray_date", "2026-03-03", 30, 99), "span is outside the document"),
-        (fact("favourite_colour", "blue", 6, 18), "unknown fact"),
-        (fact("red_flag", True, 29, 33), "the span says 'none', not True"),
-        (fact("red_flag", True, 19, 27), "the span says 'Findings', not True"),
+        (fact("xray_date", "2026-03-04", 36, 48), "the span says '3 March 2026', not '2026-03-04'"),
+        (fact("xray_date", "2026-03-03", 30, 34), "the span says 'Date', not '2026-03-03'"),
+        (fact("xray_date", "2026-03-03", 60, 999), "span is outside the document"),
+        (fact("favourite_colour", "blue", 36, 48), "unknown fact"),
+        (fact("red_flag", True, 59, 63), "the span says 'none', not True"),
+        (fact("red_flag", True, 49, 57), "the span says 'Findings', not True"),
     ],
 )
 def test_ungrounded_observations_are_rejected(observation: JsonValue, reason: str) -> None:
@@ -141,7 +143,7 @@ def test_ungrounded_observations_are_rejected(observation: JsonValue, reason: st
 
 
 def test_a_grounded_observation_carries_its_quote() -> None:
-    kept, rejected = ground(DOC, {"observations": [fact("xray_date", "2026-03-03", 6, 18)]})
+    kept, rejected = ground(DOC, {"observations": [fact("xray_date", "2026-03-03", 36, 48)]})
     assert rejected == []
     assert kept == [
         {
@@ -149,8 +151,8 @@ def test_a_grounded_observation_carries_its_quote() -> None:
             "value": "2026-03-03",
             "evidence": "xray:xray_date",
             "document": "xray",
-            "start": 6,
-            "end": 18,
+            "start": 36,
+            "end": 48,
             "quote": "3 March 2026",
         }
     ]
@@ -287,7 +289,7 @@ def test_a_quoted_fact_is_located_in_the_document() -> None:
     assert rejected == []
     (item,) = kept
     assert isinstance(item, dict)
-    assert (item["value"], item["start"], item["end"]) == ("2026-03-03", 6, 18)
+    assert (item["value"], item["start"], item["end"]) == ("2026-03-03", 36, 48)
 
 
 def test_a_repeated_quote_resolves_to_the_occurrence_that_states_the_value() -> None:

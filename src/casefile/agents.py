@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from casefile.canonical import JsonValue
 from casefile.executor import Call, Destination, Runner, StepContext
 from casefile.money import dollars
-from casefile.quotes import coerce, read_in_context
+from casefile.quotes import coerce, fields, read_in_context, read_quote
 from casefile.rules import (
     CRITERION_TEXT,
     FACT_TYPES,
@@ -131,6 +131,41 @@ def ground(document: SourceDocument, response: JsonValue) -> tuple[list[JsonValu
             }
         )
     return kept, rejected
+
+
+MISSED = "stated in the document but left out by the model; added by the check"
+"""How a recall-sweep addition is reported to the reviewer."""
+
+
+def sweep(document: SourceDocument, kept: list[JsonValue]) -> list[JsonValue]:
+    """Add every labelled field the model did not report, so leaving a fact out cannot help it.
+
+    A model can be wrong two ways: claiming what the document does not say (the span check catches
+    that) and staying silent about what it does say. Silence matters: hiding the one figure that
+    contradicts the rest would turn a conflict into a pass. Every field the model skipped is read
+    by the check itself and counted, and the reviewer is told it was added.
+    """
+    covered = {(item["fact"], item["start"]) for item in kept if isinstance(item, dict)}
+    used = {str(item["evidence"]) for item in kept if isinstance(item, dict)}
+    added: list[JsonValue] = []
+    for fact in FACT_TYPES:
+        for start, end in fields(fact, document.text):
+            value = read_quote(fact, document.text[start:end])
+            if value is None or (fact, start) in covered:
+                continue
+            evidence = _fresh_id(f"{document.id}:{fact}", used)
+            added.append(
+                {
+                    "fact": fact,
+                    "value": value,
+                    "evidence": evidence,
+                    "document": document.id,
+                    "start": start,
+                    "end": end,
+                    "quote": document.text[start:end],
+                }
+            )
+    return added
 
 
 def _locate(text: str, item: _Fact, expected: str | int | bool) -> tuple[int, int] | str:
@@ -296,7 +331,9 @@ def _extractor(document: SourceDocument, model: Call) -> Callable[[StepContext],
             retry: dict[str, JsonValue] = {**request, "rejected": list[JsonValue](rejected)}
             kept, second = ground(document, ctx.call("model", retry, model))
             rejected = [*rejected, *second]
-        return {"observations": kept, "rejected": list[JsonValue](rejected)}
+        missed = sweep(document, kept)
+        notes = [f"{document.id} {o['fact']}: {MISSED}" for o in missed if isinstance(o, dict)]
+        return {"observations": [*kept, *missed], "rejected": list[JsonValue]([*rejected, *notes])}
 
     return extract
 

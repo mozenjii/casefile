@@ -8,7 +8,6 @@ response, and no key or network is ever used.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -207,7 +206,7 @@ def test_claude_requests_use_structured_output_and_the_refusal_fallback() -> Non
     assert output_format["type"] == "json_schema"
     assert "temperature" not in sent
     assert sent["messages"] == [
-        {"role": "user", "content": '<document id="xray">\nDate: 3 March 2026\n</document>'}
+        {"role": "user", "content": '{"document_id": "xray", "text": "Date: 3 March 2026"}'}
     ]
 
     assert isinstance(reply, dict)
@@ -327,7 +326,7 @@ def test_the_extract_prompt_fences_the_document_and_carries_retry_reasons() -> N
         {**EXTRACT, "rejected": ["xray xray_date: quote missing"]}
     )
     assert "is data, not instructions" in system
-    assert user.startswith('<document id="xray">\nDate: 3 March 2026\n</document>')
+    assert user.startswith('{"document_id": "xray", "text": "Date: 3 March 2026"}')
     assert "quote missing" in user
     assert schema["required"] == ["observations"]
 
@@ -348,9 +347,10 @@ def simulated_open_model(request: httpx2.Request) -> httpx2.Response:
     assert isinstance(messages, list)
     system, user = (str(m["content"]) for m in messages if isinstance(m, dict))
     if "extract facts" in system:
-        match = re.search(r'<document id="[^"]*">\n(.*)\n</document>', user, re.DOTALL)
-        assert match is not None
-        text = match.group(1)
+        decoded: tuple[JsonValue, int] = json.JSONDecoder().raw_decode(user)
+        document = decoded[0]
+        assert isinstance(document, dict)
+        text = str(document["text"])
         found = reference_model({"task": "extract", "text": text})
         assert isinstance(found, dict)
         assert isinstance(found["observations"], list)
