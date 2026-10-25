@@ -52,6 +52,8 @@ convention = "google"
 "scripts/**" = ["S603", "S607"]
 # The crash matrix starts the current interpreter with fixed code and paths it created itself.
 "src/casefile/crash_matrix.py" = ["S603"]
+# The generator draws synthetic cases from a seeded generator on purpose: reproducible, not secret.
+"src/casefile/generator.py" = ["S311"]
 
 [tool.pyright]
 include = ["src", "tests", "scripts"]
