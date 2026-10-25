@@ -28,6 +28,7 @@ class CrashPoint(StrEnum):
     """Every place the executor offers a crash. The design document explains each one."""
 
     BEFORE_STEP = "before_step"
+    AFTER_CALL_STARTED = "after_call_started"
     AFTER_CALL_BEFORE_RECORD = "after_call_before_record"
     AFTER_RECORD = "after_record"
     BEFORE_STEP_COMPLETED = "before_step_completed"

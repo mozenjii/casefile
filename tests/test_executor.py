@@ -48,8 +48,13 @@ class World:
         return runner.complete({"facts": facts, "receipt": receipt})
 
     def content(self) -> list[tuple[str, str | None, dict[str, JsonValue]]]:
-        """The log without timestamps or hashes: what a resumed run must reproduce exactly."""
-        return [(e.type, e.step_id, dict(e.payload)) for e in self.log.read("c")]
+        """The log without timestamps, hashes or call starts: what a resume must reproduce.
+
+        Call starts are left out because a crash mid-call leaves an extra one on purpose: it is
+        the record that gets the lost call charged.
+        """
+        events = self.log.read("c")
+        return [(e.type, e.step_id, dict(e.payload)) for e in events if e.type != "CallStarted"]
 
 
 @pytest.fixture
@@ -96,6 +101,7 @@ def test_a_clean_run_passes_every_crash_point_it_should(world: World) -> None:
     world.run(recorder)
     assert [point for point, _ in recorder.hits] == [
         CrashPoint.BEFORE_STEP,
+        CrashPoint.AFTER_CALL_STARTED,
         CrashPoint.AFTER_CALL_BEFORE_RECORD,
         CrashPoint.AFTER_RECORD,
         CrashPoint.BEFORE_STEP_COMPLETED,
@@ -109,6 +115,7 @@ def test_a_clean_run_passes_every_crash_point_it_should(world: World) -> None:
 
 CRASHES = [
     (CrashPoint.BEFORE_STEP, 1),
+    (CrashPoint.AFTER_CALL_STARTED, 1),
     (CrashPoint.AFTER_CALL_BEFORE_RECORD, 1),
     (CrashPoint.AFTER_RECORD, 1),
     (CrashPoint.BEFORE_STEP_COMPLETED, 1),
@@ -126,10 +133,16 @@ def test_a_crash_anywhere_resumes_to_the_uninterrupted_result(
 ) -> None:
     with pytest.raises(SimulatedCrash):
         world.run(RaiseAt(point, occurrence))
-    resumed = world.run()
+    resumed, expected = world.run(), golden.run()
 
-    assert resumed == golden.run()
+    assert (resumed.outputs, resumed.outcome, resumed.confirmed) == (
+        expected.outputs,
+        expected.outcome,
+        expected.confirmed,
+    )
     assert world.content() == golden.content()
+    mid_call = point in (CrashPoint.AFTER_CALL_STARTED, CrashPoint.AFTER_CALL_BEFORE_RECORD)
+    assert resumed.lost_calls == (1 if mid_call else 0)
     assert world.ledger.applied() == golden.ledger.applied()
     assert world.log.verify("c") is None
     repeated = world.ledger.model_calls() - golden.ledger.model_calls()
@@ -173,3 +186,36 @@ def test_an_event_the_fold_would_refuse_is_never_written(world: World) -> None:
         runner.step("late/1", lambda _: "too late")
     assert world.content() == before
     assert Runner(world.log, "c").state.completed
+
+
+def test_a_lost_call_is_charged_at_its_estimate(tmp_path: Path) -> None:
+    log = EventLog(tmp_path / "events.sqlite", clock=lambda: NOW)
+    ledger = Ledger(tmp_path / "world.sqlite")
+    model = FakeModel(ledger, lambda request: {"echo": request, "usage": {"cost_microusd": 400}})
+
+    def ask(ctx: StepContext) -> JsonValue:
+        return ctx.call("model", {"q": "facts"}, model)
+
+    def run(faults: Faults | None = None) -> CaseState:
+        runner = Runner(log, "c", faults, estimate=lambda _: 250)
+        runner.open({})
+        runner.step("ask/1", ask)
+        return runner.complete("done")
+
+    with pytest.raises(SimulatedCrash):
+        run(RaiseAt(CrashPoint.AFTER_CALL_BEFORE_RECORD))
+    state = run()
+    assert (state.model_calls, state.lost_calls) == (2, 1)
+    assert state.recorded_cost_microusd == 400
+    assert state.spent_microusd == 400 + 250
+    assert not state.cost_unknown
+    log.close()
+    ledger.close()
+
+
+def test_a_lost_call_with_no_price_makes_the_total_unknown(world: World) -> None:
+    with pytest.raises(SimulatedCrash):
+        world.run(RaiseAt(CrashPoint.AFTER_CALL_STARTED))
+    state = world.run()
+    assert state.lost_calls == 1
+    assert state.cost_unknown

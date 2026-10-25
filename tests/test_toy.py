@@ -82,7 +82,7 @@ def test_main_records_its_crash_points_and_is_idempotent(tmp_path: Path) -> None
     files = ["--log", str(tmp_path / "e.sqlite"), "--ledger", str(tmp_path / "w.sqlite")]
     assert main([*files, "--hits", str(tmp_path / "hits.json")]) == 0
     hits = json.loads((tmp_path / "hits.json").read_text("utf-8"))
-    assert len(hits) == 15
+    assert len(hits) == 17
     assert hits[0] == ["before_step", 1]
     assert hits[-1] == ["before_case_completed", 1]
     assert main(files) == 0

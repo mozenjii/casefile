@@ -7,10 +7,11 @@ import hashlib
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from casefile.canonical import JsonValue
+from casefile.canonical import CanonicalJsonError, JsonValue
 from casefile.events import Event
 from casefile.log import EventLog
 from casefile.state import CaseState, EventType, FoldError, apply, fold
@@ -57,6 +58,7 @@ def test_a_full_history_folds_to_the_expected_state(log: EventLog) -> None:
         confirmed={"k1": {"id": 7}},
         completed=True,
         outcome="approve",
+        cost_unknown=True,  # a call recorded with no price and no estimate
     )
 
 
@@ -192,3 +194,60 @@ REFUSED_REVIEWS: list[tuple[list[Spec], str]] = [
 def test_impossible_reviews_are_refused(log: EventLog, specs: list[Spec], message: str) -> None:
     with pytest.raises(FoldError, match=message):
         fold(write(log, specs))
+
+
+STARTED: Spec = (
+    E.CALL_STARTED,
+    "s/1",
+    {"kind": "model", "request_hash": "h1", "estimate_microusd": 300},
+)
+PRICED: Spec = (
+    E.CALL_RECORDED,
+    "s/1",
+    {"kind": "model", "request_hash": "h1", "response": {"usage": {"cost_microusd": 410}}},
+)
+
+
+def test_spend_is_the_real_cost_once_recorded_and_the_estimate_while_lost(log: EventLog) -> None:
+    lost = fold(write(log, [OPEN, START, STARTED, STARTED]))
+    assert (lost.model_calls, lost.lost_calls, lost.spent_microusd) == (2, 2, 600)
+    log.append("c", E.CALL_RECORDED, PRICED[2], step_id="s/1")
+    recorded = fold(log.read("c"))
+    assert (recorded.model_calls, recorded.lost_calls, recorded.spent_microusd) == (2, 1, 710)
+    assert not recorded.cost_unknown
+
+
+def test_a_recorded_call_without_a_price_is_charged_its_estimate(log: EventLog) -> None:
+    unpriced: Spec = (
+        E.CALL_RECORDED,
+        "s/1",
+        {"kind": "model", "request_hash": "h1", "response": "r"},
+    )
+    state = fold(write(log, [OPEN, START, STARTED, unpriced]))
+    assert (state.spent_microusd, state.cost_unknown) == (300, False)
+
+
+def test_a_budget_stop_is_recorded_with_its_reason(log: EventLog) -> None:
+    stop: Spec = (E.BUDGET_EXHAUSTED, None, {"reason": "model call limit reached (2 of 2)"})
+    state = fold(write(log, [OPEN, stop, CLOSE]))
+    assert state.stopped == "model call limit reached (2 of 2)"
+
+
+def test_a_malformed_estimate_is_refused(log: EventLog) -> None:
+    floating = cast(JsonValue, 2.5)  # a float is exactly what the log must refuse
+    bad: Spec = (
+        E.CALL_STARTED,
+        "s/1",
+        {"kind": "model", "request_hash": "h1", "estimate_microusd": floating},
+    )
+    with pytest.raises(CanonicalJsonError):
+        write(log, [OPEN, START, bad])
+    # The refused float left OPEN and START in the log; append the next bad start after them.
+    words: dict[str, JsonValue] = {
+        "kind": "model",
+        "request_hash": "h1",
+        "estimate_microusd": "lots",
+    }
+    log.append("c", E.CALL_STARTED, words, step_id="s/1")
+    with pytest.raises(FoldError, match="must be an integer or null"):
+        fold(log.read("c"))

@@ -32,10 +32,12 @@ class EventType(StrEnum):
 
     CASE_OPENED = "CaseOpened"
     STEP_STARTED = "StepStarted"
+    CALL_STARTED = "CallStarted"
     CALL_RECORDED = "CallRecorded"
     STEP_COMPLETED = "StepCompleted"
     EFFECT_INTENDED = "EffectIntended"
     EFFECT_CONFIRMED = "EffectConfirmed"
+    BUDGET_EXHAUSTED = "BudgetExhausted"
     CASE_COMPLETED = "CaseCompleted"
     DOSSIER_REVISED = "DossierRevised"
     REVIEWER_DECISION = "ReviewerDecision"
@@ -80,6 +82,41 @@ class CaseState:
     outcome: JsonValue = None
     decisions: Mapping[str, str] = field(default_factory=dict[str, str])
     released: bool = False
+    attempts: Mapping[tuple[str, str], int] = field(default_factory=dict[tuple[str, str], int])
+    estimates: Mapping[tuple[str, str], int | None] = field(
+        default_factory=dict[tuple[str, str], int | None]
+    )
+    recorded_cost_microusd: int = 0
+    cost_unknown: bool = False
+    stopped: str | None = None
+
+    @property
+    def model_calls(self) -> int:
+        """Model calls paid for or possibly paid for, including any lost in a crash."""
+        keys = set(self.attempts) | set(self.calls)
+        return sum(max(self.attempts.get(key, 0), 1 if key in self.calls else 0) for key in keys)
+
+    @property
+    def lost_calls(self) -> int:
+        """Calls that were started but never recorded: possibly paid for, answer lost."""
+        return sum(
+            max(0, count - (1 if key in self.calls else 0)) for key, count in self.attempts.items()
+        )
+
+    @property
+    def spent_microusd(self) -> int:
+        """Recorded costs plus the estimated cost of every lost call.
+
+        A crash between starting a call and recording its answer loses the answer but maybe not
+        the bill, so the start is written first with an estimate, and the estimate is charged
+        until a recorded answer replaces it. This can over-count a call that never went out; it
+        never under-counts one that did, which is the right way round for a budget.
+        """
+        lost = 0
+        for key, count in self.attempts.items():
+            missing = max(0, count - (1 if key in self.calls else 0))
+            lost += missing * (self.estimates.get(key) or 0)
+        return self.recorded_cost_microusd + lost
 
     @property
     def dossier_hash(self) -> str | None:
@@ -161,13 +198,48 @@ def _step_started(state: CaseState, event: Event) -> CaseState:
     return replace(state, started=state.started | {step})
 
 
+def _call_started(state: CaseState, event: Event) -> CaseState:
+    step = _running_step(state, event)
+    key = (step, _text(event, "request_hash"))
+    _text(event, "kind")
+    estimate = _value(event, "estimate_microusd")
+    if estimate is not None and (not isinstance(estimate, int) or isinstance(estimate, bool)):
+        raise FoldError(f"seq {event.seq}: estimate_microusd must be an integer or null")
+    # Starting the same call again means the earlier attempt never got recorded: it was lost. If
+    # we cannot even estimate what it cost, the total is no longer known.
+    lost_unpriced = key in state.attempts and estimate is None
+    return replace(
+        state,
+        attempts={**state.attempts, key: state.attempts.get(key, 0) + 1},
+        estimates={**state.estimates, key: estimate},
+        cost_unknown=state.cost_unknown or lost_unpriced,
+    )
+
+
 def _call_recorded(state: CaseState, event: Event) -> CaseState:
     step = _running_step(state, event)
     key = (step, _text(event, "request_hash"))
     if key in state.calls:
         raise FoldError(f"seq {event.seq}: call {key[1][:12]} in step {step!r} recorded twice")
     _text(event, "kind")
-    return replace(state, calls={**state.calls, key: _value(event, "response")})
+    response = _value(event, "response")
+    usage = response.get("usage") if isinstance(response, dict) else None
+    reported = usage.get("cost_microusd") if isinstance(usage, dict) else None
+    # The reply's own cost when it has one, else the estimate written down when the call started.
+    if isinstance(reported, int) and not isinstance(reported, bool):
+        cost: int | None = reported
+    else:
+        cost = state.estimates.get(key)
+    return replace(
+        state,
+        calls={**state.calls, key: response},
+        recorded_cost_microusd=state.recorded_cost_microusd + (cost or 0),
+        cost_unknown=state.cost_unknown or cost is None,
+    )
+
+
+def _budget_exhausted(state: CaseState, event: Event) -> CaseState:
+    return replace(state, stopped=_text(event, "reason"))
 
 
 def _step_completed(state: CaseState, event: Event) -> CaseState:
@@ -231,7 +303,9 @@ def _case_released(state: CaseState, event: Event) -> CaseState:
 _APPLY = {
     EventType.CASE_OPENED: _opened_twice,
     EventType.STEP_STARTED: _step_started,
+    EventType.CALL_STARTED: _call_started,
     EventType.CALL_RECORDED: _call_recorded,
+    EventType.BUDGET_EXHAUSTED: _budget_exhausted,
     EventType.STEP_COMPLETED: _step_completed,
     EventType.EFFECT_INTENDED: _effect_intended,
     EventType.EFFECT_CONFIRMED: _effect_confirmed,

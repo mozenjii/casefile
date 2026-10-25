@@ -7,6 +7,9 @@ The rules, each of which the crash matrix tests:
   to the log *before* its result is used, keyed by a hash of the request. On replay the recorded
   response is returned. A call that returned but was not yet recorded when the process died is
   made again; nothing can avoid that, and the matrix counts how often it happens.
+* **A call's cost is written down before the call is made.** ``CallStarted`` carries an estimate;
+  ``CallRecorded`` the real cost. If the process dies in between, the start is still in the log,
+  so the possibly-paid-for call is charged against the budget instead of vanishing.
 * **An effect happens once at the destination.** An effect is recorded as intended, then sent
   with an idempotency key, then recorded as confirmed. On resume an unconfirmed intent is sent
   again with the same key, and the destination deduplicates. Delivery is at least once; the
@@ -59,11 +62,22 @@ def idempotency_key(case_id: str, step_id: str, kind: str) -> str:
 class Runner:
     """Drive one case forward from wherever its log says it is."""
 
-    def __init__(self, log: EventLog, case_id: str, faults: Faults | None = None) -> None:
-        """Read the case's log and fold it; a case with no events is opened by ``open``."""
+    def __init__(
+        self,
+        log: EventLog,
+        case_id: str,
+        faults: Faults | None = None,
+        estimate: Callable[[JsonValue], int | None] | None = None,
+    ) -> None:
+        """Read the case's log and fold it; a case with no events is opened by ``open``.
+
+        ``estimate`` prices a model request before it is sent, in micro-dollars (None when the
+        price is unknown); it is what a lost call is charged.
+        """
         self._log = log
         self._case_id = case_id
         self._faults: Faults = faults if faults is not None else NoFaults()
+        self._estimate = estimate or _no_estimate
         self._state: CaseState | None = load(log, case_id)
 
     @property
@@ -90,10 +104,23 @@ class Runner:
         self._faults.hit(CrashPoint.BEFORE_STEP)
         if step_id not in self.state.started:
             self._append(EventType.STEP_STARTED, {}, step_id)
-        output = body(StepContext(step_id, lambda: self.state, self._append, self._faults))
+        context = StepContext(
+            step_id, lambda: self.state, self._append, self._faults, self._estimate
+        )
+        output = body(context)
         self._faults.hit(CrashPoint.BEFORE_STEP_COMPLETED)
         self._append(EventType.STEP_COMPLETED, {"output": output}, step_id)
         return output
+
+    def estimate(self, request: JsonValue) -> int | None:
+        """What a model request is expected to cost, in micro-dollars, or None if unknown."""
+        return self._estimate(request)
+
+    def stop(self, reason: str) -> CaseState:
+        """Record that the run is stopping early (a budget ran out) and why."""
+        if self.state.stopped is None:
+            self._append(EventType.BUDGET_EXHAUSTED, {"reason": reason})
+        return self.state
 
     def complete(self, outcome: JsonValue) -> CaseState:
         """Close the case with ``outcome`` unless it is already closed, and return its state."""
@@ -118,12 +145,14 @@ class StepContext:
         state: Callable[[], CaseState],
         append: Callable[[EventType, Mapping[str, JsonValue], str | None], None],
         faults: Faults,
+        estimate: Callable[[JsonValue], int | None],
     ) -> None:
         """Bind the context to one running step of a runner, through the runner's own hooks."""
         self._step_id = step_id
         self._state = state
         self._append = append
         self._faults = faults
+        self._estimate = estimate
 
     def call(self, kind: str, request: JsonValue, call: Call) -> JsonValue:
         """Return the recorded response to ``request``, making and recording the call if needed."""
@@ -131,6 +160,13 @@ class StepContext:
         calls = self._state().calls
         if key in calls:
             return calls[key]
+        started: dict[str, JsonValue] = {
+            "kind": kind,
+            "request_hash": key[1],
+            "estimate_microusd": self._estimate(request),
+        }
+        self._append(EventType.CALL_STARTED, started, self._step_id)
+        self._faults.hit(CrashPoint.AFTER_CALL_STARTED)
         response = call(request)
         self._faults.hit(CrashPoint.AFTER_CALL_BEFORE_RECORD)
         self._append(
@@ -161,3 +197,8 @@ class StepContext:
         self._faults.hit(CrashPoint.AFTER_SEND_BEFORE_CONFIRM)
         self._append(EventType.EFFECT_CONFIRMED, {"key": key, "receipt": receipt}, self._step_id)
         return receipt
+
+
+def _no_estimate(request: JsonValue) -> int | None:
+    """The default when no price is configured: the cost of a call is unknown."""
+    return None
