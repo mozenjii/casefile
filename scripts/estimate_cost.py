@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from casefile.estimate import dollars, estimate_cases
 from casefile.generator import generate_set
-from casefile.llm import ConfigError, describe, settings_from_env
+from casefile.llm import ConfigError, describe, settings_for_repository
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def main() -> int:
@@ -28,7 +31,7 @@ def main() -> int:
     parser.add_argument("--sample", type=int, default=18, help="cases to measure (default 18)")
     arguments = parser.parse_args()
     try:
-        settings = settings_from_env()
+        settings = settings_for_repository(ROOT)
     except ConfigError as error:
         print(f"provider settings: {error}", file=sys.stderr)
         return 2
@@ -51,7 +54,10 @@ def main() -> int:
     print()
     print("An estimate, not a quote: about four characters per token, and no allowance for hidden")
     print("reasoning tokens, which models that think before answering bill as output.")
-    if settings.price_input is None:
+    if settings.backend == "reference":
+        print("The configured provider is the offline stand-in, which costs nothing. Set")
+        print("CASEFILE_PROVIDER (see .env.example) to estimate a real model.")
+    elif settings.price_input is None:
         print(
             "No price is known for this model: set CASEFILE_PRICE_INPUT and CASEFILE_PRICE_OUTPUT."
         )

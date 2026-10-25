@@ -31,6 +31,7 @@ import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from casefile.canonical import JsonValue
@@ -363,5 +364,35 @@ __all__ = [
     "build_model",
     "describe",
     "parse_json",
+    "read_env_file",
+    "settings_for_repository",
     "settings_from_env",
 ]
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    """Read ``KEY=VALUE`` lines from a ``.env`` file; a missing file reads as empty.
+
+    Blank lines and ``#`` comments are skipped and matching quotes around a value are removed.
+    Nothing is exported: callers merge the result *under* the real environment, so a variable
+    set in the shell always wins over the file.
+    """
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key.strip():
+            values[key.strip()] = value
+    return values
+
+
+def settings_for_repository(root: Path) -> Settings:
+    """Resolve settings from ``root/.env`` overlaid by the real environment."""
+    return settings_from_env({**read_env_file(root / ".env"), **os.environ})

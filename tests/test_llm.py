@@ -30,6 +30,8 @@ from casefile.llm import (
     build_model,
     describe,
     parse_json,
+    read_env_file,
+    settings_for_repository,
     settings_from_env,
 )
 from casefile.log import EventLog
@@ -402,3 +404,26 @@ def test_a_real_model_over_http_reaches_every_label(
         isinstance(c, dict) and isinstance(c["usage"], dict) and c["usage"]["cost_microusd"] == 251
         for c in costs
     )
+
+
+def test_a_dot_env_file_is_read_and_the_real_environment_wins(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "# comment\n\nCASEFILE_PROVIDER=openrouter\nOPENROUTER_API_KEY='from-file'\nnot a pair\n",
+        encoding="utf-8",
+    )
+    assert read_env_file(tmp_path / ".env") == {
+        "CASEFILE_PROVIDER": "openrouter",
+        "OPENROUTER_API_KEY": "from-file",
+    }
+    assert read_env_file(tmp_path / "missing") == {}
+
+
+def test_repository_settings_put_the_shell_over_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".env").write_text(
+        "CASEFILE_PROVIDER=openrouter\nOPENROUTER_API_KEY=file\n", "utf-8"
+    )
+    monkeypatch.delenv("CASEFILE_PROVIDER", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "shell")
+    assert settings_for_repository(tmp_path).api_key == "shell"
