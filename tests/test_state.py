@@ -59,6 +59,7 @@ def test_a_full_history_folds_to_the_expected_state(log: EventLog) -> None:
         completed=True,
         outcome="approve",
         cost_unknown=True,  # a call recorded with no price and no estimate
+        revised_at=7,  # the dossier was written by CaseCompleted at seq 7
     )
 
 
@@ -147,9 +148,9 @@ def decide(decision: str, seen: str = DOSSIER_HASH, reviewer: str = "human:ana")
     return (E.REVIEWER_DECISION, None, payload)
 
 
-def release(named: str = DOSSIER_HASH) -> Spec:
+def release(named: str = DOSSIER_HASH, releaser: str = "human:ben") -> Spec:
     """A release of the dossier with hash ``named``."""
-    return (E.CASE_RELEASED, None, {"dossier_hash": named})
+    return (E.CASE_RELEASED, None, {"dossier_hash": named, "releaser": releaser})
 
 
 def test_an_approved_dossier_can_be_released(log: EventLog) -> None:
@@ -163,9 +164,11 @@ def test_there_is_no_dossier_hash_before_the_run_completes(log: EventLog) -> Non
     assert fold(write(log, [OPEN, START])).dossier_hash is None
 
 
-def test_revising_back_to_the_approved_content_restores_the_approval(log: EventLog) -> None:
-    state = fold(write(log, [*BASE, decide("approve"), REVISE, UNREVISE, release()]))
-    assert state.released
+def test_revising_back_to_approved_content_does_not_bring_the_approval_back(
+    log: EventLog,
+) -> None:
+    with pytest.raises(FoldError, match="without an approval"):
+        fold(write(log, [*BASE, decide("approve"), REVISE, UNREVISE, release()]))
 
 
 def test_a_stale_decision_is_kept_but_authorizes_nothing(log: EventLog) -> None:
@@ -176,6 +179,8 @@ def test_a_stale_decision_is_kept_but_authorizes_nothing(log: EventLog) -> None:
 
 REFUSED_REVIEWS: list[tuple[list[Spec], str]] = [
     ([*BASE, release()], "without an approval"),
+    ([*BASE, decide("approve"), release(releaser="agent:drafter")], "must be a human"),
+    ([*BASE, decide("approve"), (E.CASE_RELEASED, None, {"dossier_hash": DOSSIER_HASH})], "lacks"),
     ([*BASE, decide("approve"), REVISE, release()], "not the current dossier"),
     ([*BASE, decide("approve"), REVISE, release(REVISED_HASH)], "without an approval"),
     ([*BASE, decide("approve"), decide("reject"), release()], "without an approval"),

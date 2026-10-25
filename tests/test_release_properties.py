@@ -37,21 +37,24 @@ def release_is_justified(history: list[Event], named: str) -> bool:
     """Decide from scratch whether releasing the dossier hashed ``named`` is allowed now.
 
     Allowed when the case is not already released, ``named`` is the current dossier's hash, and the
-    most recent valid decision by a person on that exact hash is an approval.
+    most recent valid decision by a person on that exact hash is an approval made after the dossier
+    last changed.
     """
     current: str | None = None
-    latest: dict[str, str] = {}
-    for event in history:
+    changed_at = 0
+    latest: dict[str, tuple[str, int]] = {}
+    for position, event in enumerate(history):
         payload = event.payload
         if event.type == EventType.CASE_RELEASED:
             return False
         if event.type == EventType.CASE_COMPLETED:
-            current = digest(payload["outcome"])
+            current, changed_at = digest(payload["outcome"]), position
         elif event.type == EventType.DOSSIER_REVISED:
-            current = digest(payload["dossier"])
+            current, changed_at = digest(payload["dossier"]), position
         elif event.type == EventType.REVIEWER_DECISION:
-            latest[str(payload["dossier_hash"])] = str(payload["decision"])
-    return named == current and latest.get(named) == "approve"
+            latest[str(payload["dossier_hash"])] = (str(payload["decision"]), position)
+    decision, made_at = latest.get(named, ("none", -1))
+    return named == current and decision == "approve" and made_at > changed_at
 
 
 def event(seq: int, kind: EventType, payload: dict[str, JsonValue]) -> Event:
@@ -121,7 +124,8 @@ class ReviewMachine(RuleBasedStateMachine):
         """Try to release a dossier; the fold must accept exactly when the rule allows it."""
         named = self.pick_hash(which)
         expected = release_is_justified(self.history, named)
-        assert self.offer(EventType.CASE_RELEASED, {"dossier_hash": named}) == expected
+        payload: dict[str, JsonValue] = {"dossier_hash": named, "releaser": "human:ben"}
+        assert self.offer(EventType.CASE_RELEASED, payload) == expected
 
     @invariant()
     def a_released_case_was_released_by_a_justified_event(self) -> None:

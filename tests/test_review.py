@@ -43,13 +43,13 @@ def test_an_approved_dossier_is_released(log: EventLog) -> None:
     review = Review(log)
     seen = review.show(CASE_ID).dossier_hash
     assert review.decide(CASE_ID, "approve", reviewer=ANA, seen_hash=seen).approved
-    assert review.release(CASE_ID).released
+    assert review.release(CASE_ID, releaser=BEN).released
 
 
 def test_release_without_approval_is_refused_and_nothing_written(log: EventLog) -> None:
     before = log.read(CASE_ID)
     with pytest.raises(FoldError, match="without an approval"):
-        Review(log).release(CASE_ID)
+        Review(log).release(CASE_ID, releaser=ANA)
     assert log.read(CASE_ID) == before
 
 
@@ -61,9 +61,9 @@ def test_an_edit_after_approval_needs_a_fresh_approval(log: EventLog) -> None:
     edited = review.revise(CASE_ID, summary, editor=BEN, seen_hash=seen)
     assert not edited.approved
     with pytest.raises(FoldError, match="without an approval"):
-        review.release(CASE_ID)
+        review.release(CASE_ID, releaser=ANA)
     review.decide(CASE_ID, "approve", reviewer=ANA, seen_hash=edited.dossier_hash)
-    assert review.release(CASE_ID).released
+    assert review.release(CASE_ID, releaser=ANA).released
 
 
 def test_an_approval_of_an_outdated_view_is_recorded_but_does_not_count(log: EventLog) -> None:
@@ -96,4 +96,4 @@ def test_a_case_without_a_dossier_cannot_be_reviewed(tmp_path: Path) -> None:
             Review(empty).show("nobody")
         Runner(empty, "half").open({"member": "SYN"})
         with pytest.raises(NotReviewable):
-            Review(empty).release("half")
+            Review(empty).release("half", releaser=ANA)

@@ -8,8 +8,8 @@ The dossier's hash does two jobs here:
 * **It is the precondition for an edit.** ``revise`` refuses unless the editor's hash is still the
   current one, so two people editing the same view cannot silently overwrite each other.
 
-Release is refused by the fold itself unless the latest decision on the current dossier is an
-approval; this module only gives that rule a name callers can catch.
+Release is refused by the fold itself unless the latest decision on the current dossier, made
+since its latest revision, is an approval; release records who released.
 """
 
 from __future__ import annotations
@@ -80,10 +80,14 @@ class Review:
         }
         return _view(self._append(state, EventType.REVIEWER_DECISION, payload))
 
-    def release(self, case_id: str) -> ReviewView:
-        """Release the current dossier; the fold refuses unless it is approved as it stands."""
+    def release(self, case_id: str, *, releaser: str) -> ReviewView:
+        """Release the current dossier as ``releaser``; refused unless it is approved as it stands.
+
+        The releaser is recorded, so the log says who let each dossier go, not only who approved
+        it. Whether the releaser may be the same person as the approver is left to policy.
+        """
         state = self._reviewable(case_id)
-        payload: dict[str, JsonValue] = {"dossier_hash": _hash(state)}
+        payload: dict[str, JsonValue] = {"dossier_hash": _hash(state), "releaser": releaser}
         return _view(self._append(state, EventType.CASE_RELEASED, payload))
 
     def _reviewable(self, case_id: str) -> CaseState:

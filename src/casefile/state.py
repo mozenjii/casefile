@@ -81,6 +81,8 @@ class CaseState:
     completed: bool = False
     outcome: JsonValue = None
     decisions: Mapping[str, str] = field(default_factory=dict[str, str])
+    decided_at: Mapping[str, int] = field(default_factory=dict[str, int])
+    revised_at: int = 0
     released: bool = False
     attempts: Mapping[tuple[str, str], int] = field(default_factory=dict[tuple[str, str], int])
     estimates: Mapping[tuple[str, str], int | None] = field(
@@ -125,8 +127,16 @@ class CaseState:
 
     @property
     def approved(self) -> bool:
-        """Say whether the latest decision on the current dossier is an approval."""
-        return self.dossier_hash is not None and self.decisions.get(self.dossier_hash) == "approve"
+        """Say whether the current dossier was approved, as it stands, since its latest revision.
+
+        Keyed by hash, so an edit makes an earlier approval stop matching; and only decisions made
+        after the latest revision count, so editing a dossier back to content approved before a
+        problem was found does not quietly bring that approval back.
+        """
+        digest = self.dossier_hash
+        if digest is None or self.decisions.get(digest) != "approve":
+            return False
+        return self.decided_at.get(digest, 0) > self.revised_at
 
     def in_progress(self, step_id: str) -> bool:
         """Say whether ``step_id`` has started and not yet completed."""
@@ -272,12 +282,12 @@ def _case_completed(state: CaseState, event: Event) -> CaseState:
     unconfirmed = sorted(state.intended.keys() - state.confirmed.keys())
     if unconfirmed:
         raise FoldError(f"seq {event.seq}: case completed with {len(unconfirmed)} unsent effect(s)")
-    return replace(state, completed=True, outcome=_value(event, "outcome"))
+    return replace(state, completed=True, outcome=_value(event, "outcome"), revised_at=event.seq)
 
 
 def _dossier_revised(state: CaseState, event: Event) -> CaseState:
     _human(event, "editor")
-    return replace(state, outcome=_value(event, "dossier"))
+    return replace(state, outcome=_value(event, "dossier"), revised_at=event.seq)
 
 
 def _reviewer_decision(state: CaseState, event: Event) -> CaseState:
@@ -288,10 +298,15 @@ def _reviewer_decision(state: CaseState, event: Event) -> CaseState:
     # A decision on a stale dossier is kept, because it is what the reviewer did, but it is filed
     # under the hash they saw, so it can never authorize a different dossier.
     seen = _text(event, "dossier_hash")
-    return replace(state, decisions={**state.decisions, seen: decision})
+    return replace(
+        state,
+        decisions={**state.decisions, seen: decision},
+        decided_at={**state.decided_at, seen: event.seq},
+    )
 
 
 def _case_released(state: CaseState, event: Event) -> CaseState:
+    _human(event, "releaser")
     named = _text(event, "dossier_hash")
     if named != state.dossier_hash:
         raise FoldError(f"seq {event.seq}: release names {named[:12]}, not the current dossier")
