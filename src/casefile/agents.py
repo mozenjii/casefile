@@ -21,6 +21,7 @@ recommendation or skip the review.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -28,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from casefile.canonical import JsonValue
 from casefile.executor import Call, Destination, Runner, StepContext
-from casefile.quotes import read_in_context
+from casefile.quotes import coerce, read_in_context
 from casefile.rules import (
     CRITERION_TEXT,
     FACT_TYPES,
@@ -48,14 +49,18 @@ class _Strict(BaseModel):
 
 
 class _Fact(_Strict):
+    """One extracted fact: by character span (start, end) or by the exact words quoted."""
+
     fact: str
     value: str | int | bool
-    start: int
-    end: int
+    start: int | None = None
+    end: int | None = None
+    quote: str | None = None
 
 
 class _Extraction(_Strict):
     observations: list[_Fact]
+    usage: dict[str, int | float | str | None] | None = None
 
 
 class _Claim(_Strict):
@@ -66,6 +71,7 @@ class _Claim(_Strict):
 class _Draft(_Strict):
     summary: str
     claims: list[_Claim]
+    usage: dict[str, int | float | str | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -92,31 +98,61 @@ def ground(document: SourceDocument, response: JsonValue) -> tuple[list[JsonValu
     rejected: list[str] = []
     used: set[str] = set()
     for item in extraction.observations:
-        where = f"{document.id} {item.fact} [{item.start}:{item.end}]"
+        where = f"{document.id} {item.fact}"
         if item.fact not in FACT_TYPES:
             rejected.append(f"{where}: unknown fact")
             continue
-        if not 0 <= item.start < item.end <= len(document.text):
-            rejected.append(f"{where}: span is outside the document")
+        expected = coerce(item.fact, item.value)
+        if expected is None:
+            rejected.append(f"{where}: {item.value!r} is not a valid value for this fact")
             continue
-        quote = document.text[item.start : item.end]
-        stated = read_in_context(item.fact, document.text, item.start, item.end)
-        if stated is None or stated != item.value or type(stated) is not type(item.value):
+        span = _locate(document.text, item, expected)
+        if isinstance(span, str):
+            rejected.append(f"{where}: {span}")
+            continue
+        start, end = span
+        where = f"{where} [{start}:{end}]"
+        quote = document.text[start:end]
+        stated = read_in_context(item.fact, document.text, start, end)
+        if stated is None or stated != expected or type(stated) is not type(expected):
             rejected.append(f"{where}: the span says {quote!r}, not {item.value!r}")
             continue
         evidence = _fresh_id(f"{document.id}:{item.fact}", used)
         kept.append(
             {
                 "fact": item.fact,
-                "value": item.value,
+                "value": expected,
                 "evidence": evidence,
                 "document": document.id,
-                "start": item.start,
-                "end": item.end,
+                "start": start,
+                "end": end,
                 "quote": quote,
             }
         )
     return kept, rejected
+
+
+def _locate(text: str, item: _Fact, expected: str | int | bool) -> tuple[int, int] | str:
+    """Find the span an observation rests on, or say why there is none.
+
+    A span given as offsets is used as is (after a bounds check). A quote is looked up word for
+    word; if it occurs more than once, the first occurrence that states the value is chosen, so a
+    model never has to count characters, and a quote that is not in the document is rejected.
+    """
+    if item.start is not None and item.end is not None:
+        if not 0 <= item.start < item.end <= len(text):
+            return "span is outside the document"
+        return item.start, item.end
+    if not item.quote:
+        return "no span and no quote given"
+    starts = [match.start() for match in re.finditer(re.escape(item.quote), text)]
+    if not starts:
+        return f"quote {item.quote!r} is not in the document"
+    width = len(item.quote)
+    for start in starts:
+        if read_in_context(item.fact, text, start, start + width) == expected:
+            return start, start + width
+    return starts[0], starts[0] + width
 
 
 def run_review(

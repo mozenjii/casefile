@@ -19,7 +19,7 @@ from casefile.executor import Call, Runner
 from casefile.fakes import FakeDestination, FakeModel, Ledger
 from casefile.generator import DEFECTS, Case, generate
 from casefile.log import EventLog
-from casefile.quotes import read_quote
+from casefile.quotes import coerce, read_quote
 from casefile.reference_model import reference_model
 from casefile.state import CaseState
 
@@ -268,3 +268,69 @@ def test_the_reference_model_refuses_what_it_was_not_built_for(
 def test_a_quote_for_an_unknown_fact_states_nothing() -> None:
     assert read_quote("favourite_colour", "blue") is None
     assert read_quote("therapy_weeks", "several weeks") is None
+
+
+TWICE = SourceDocument(
+    "note", "Clinical note", "Seen 2 weeks ago. They completed 7 weeks of therapy.\n"
+)
+
+
+def quoted(name: str, value: JsonValue, quote: str) -> JsonValue:
+    """One extracted fact as a language model returns it: the value as text, and the quote."""
+    return {"fact": name, "value": value, "quote": quote}
+
+
+def test_a_quoted_fact_is_located_in_the_document() -> None:
+    kept, rejected = ground(
+        DOC, {"observations": [quoted("xray_date", "2026-03-03", "3 March 2026")]}
+    )
+    assert rejected == []
+    (item,) = kept
+    assert isinstance(item, dict)
+    assert (item["value"], item["start"], item["end"]) == ("2026-03-03", 6, 18)
+
+
+def test_a_repeated_quote_resolves_to_the_occurrence_that_states_the_value() -> None:
+    kept, rejected = ground(TWICE, {"observations": [quoted("therapy_weeks", "7", "weeks")]})
+    assert kept == []
+    assert "not '7'" in rejected[0]
+    kept, rejected = ground(TWICE, {"observations": [quoted("therapy_weeks", "7", "7 weeks")]})
+    assert rejected == []
+    (item,) = kept
+    assert isinstance(item, dict)
+    assert item["value"] == 7
+    assert TWICE.text[int(str(item["start"])) : int(str(item["end"]))] == "7 weeks"
+
+
+@pytest.mark.parametrize(
+    ("observation", "reason"),
+    [
+        (quoted("xray_date", "2026-03-03", "4 March 2026"), "is not in the document"),
+        (quoted("therapy_weeks", "six", "6 weeks"), "is not a valid value for this fact"),
+        ({"fact": "xray_date", "value": "2026-03-03"}, "no span and no quote given"),
+    ],
+)
+def test_bad_quotes_are_rejected(observation: JsonValue, reason: str) -> None:
+    kept, rejected = ground(DOC, {"observations": [observation]})
+    assert kept == []
+    assert rejected[0].endswith(reason)
+
+
+@pytest.mark.parametrize(
+    ("fact", "value", "expected"),
+    [
+        ("therapy_weeks", "6", 6),
+        ("therapy_weeks", 6, 6),
+        ("therapy_weeks", True, None),
+        ("red_flag", "Yes", True),
+        ("red_flag", "false", False),
+        ("red_flag", "maybe", None),
+        ("xray_date", "3 March 2026", "2026-03-03"),
+        ("xray_date", 20260303, None),
+        ("favourite_colour", "blue", None),
+    ],
+)
+def test_reported_values_are_normalised_to_the_fact_type(
+    fact: str, value: str | int | bool, expected: object
+) -> None:
+    assert coerce(fact, value) == expected

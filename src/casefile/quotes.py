@@ -69,3 +69,28 @@ def read_in_context(fact: str, text: str, start: int, end: int) -> str | int | b
         if not text[line_start:start].rstrip().endswith(label):
             return None
     return read_quote(fact, text[start:end])
+
+
+_TRUE = frozenset({"true", "yes"})
+_FALSE = frozenset({"false", "no"})
+
+
+def coerce(fact: str, value: str | int | bool) -> str | int | bool | None:
+    """Normalise a reported value to the fact's type, or return None if it cannot be one.
+
+    Language models report every value as text ("6", "yes", "2026-03-01"); the reference model
+    reports typed values. Both end up as what the rules engine reads: an ISO date, an int or a bool.
+    """
+    kind = FACT_TYPES.get(fact)
+    if kind is date:
+        return _date(value) if isinstance(value, str) else None
+    if kind is int:
+        if type(value) is int:
+            return value
+        return int(value) if isinstance(value, str) and value.strip().isdigit() else None
+    if kind is bool:
+        if type(value) is bool:
+            return value
+        word = value.strip().lower() if isinstance(value, str) else ""
+        return True if word in _TRUE else False if word in _FALSE else None
+    return None
