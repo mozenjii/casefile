@@ -27,6 +27,7 @@ from markupsafe import Markup, escape
 
 from casefile.canonical import JsonValue
 from casefile.cases import load
+from casefile.estimate import dollars
 from casefile.events import Event
 from casefile.log import AppendConflict, EventLog
 from casefile.review import NotReviewable, Review, ReviewView
@@ -150,6 +151,7 @@ def _page(
         "dossier": dossier,
         "documents": documents,
         "timeline": [_moment(event) for event in events],
+        "spend": _spend(events),
         "anchor": anchor,
         "notice": _NOTICES.get(notice, ""),
         "error": error,
@@ -207,11 +209,44 @@ def _status(view: ReviewView) -> str:
     return "Awaiting review"
 
 
+def _usage(event: Event) -> dict[str, JsonValue] | None:
+    """The token usage a recorded model call carries, if the model reported any."""
+    response = _object(event.payload.get("response"))
+    usage = response.get("usage")
+    return _object(usage) if isinstance(usage, dict) else None
+
+
+def _spend(events: list[Event]) -> str:
+    """What the case's model calls cost, in words: a total, unknown, or none (the stand-in)."""
+    calls = [event for event in events if event.type == "CallRecorded"]
+    usages = [usage for event in calls if (usage := _usage(event)) is not None]
+    if not usages:
+        return f"{len(calls)} model calls, answered by the offline stand-in at no cost"
+    costs = [usage.get("cost_microusd") for usage in usages]
+    if any(not isinstance(cost, int) or isinstance(cost, bool) for cost in costs):
+        return f"{len(calls)} model calls, cost unknown (no price configured)"
+    total = sum(cost for cost in costs if isinstance(cost, int))
+    return f"{len(calls)} model calls, {dollars(total)} in total"
+
+
+def _call_detail(event: Event) -> str:
+    """Describe one recorded model call, with its tokens and cost when known."""
+    usage = _usage(event)
+    if usage is None:
+        return f"{event.payload.get('kind')} call recorded"
+    cost = usage.get("cost_microusd")
+    priced = (
+        dollars(cost) if isinstance(cost, int) and not isinstance(cost, bool) else "cost unknown"
+    )
+    tokens_in, tokens_out = usage.get("input_tokens"), usage.get("output_tokens")
+    return f"{usage.get('model')} · {tokens_in} in / {tokens_out} out · {priced}"
+
+
 def _moment(event: Event) -> dict[str, str]:
     """One line of the timeline."""
     payload = event.payload
     detail = {
-        "CallRecorded": f"{payload.get('kind')} call recorded",
+        "CallRecorded": _call_detail(event),
         "EffectIntended": f"{payload.get('kind')} intended",
         "EffectConfirmed": "delivery confirmed",
         "ReviewerDecision": f"{payload.get('decision')} by {payload.get('reviewer')}",

@@ -134,6 +134,7 @@ summary { cursor: pointer; font-weight: 600; }
 
       <section class="panel" aria-labelledby="timeline-h">
         <h2 id="timeline-h">Timeline</h2>
+        <p class="muted" style="margin-top:0">{{ spend }}</p>
         <ol class="timeline">
           {% for item in timeline %}
           <li><span class="muted">{{ item.seq }}</span><span class="mono muted">{{ item.time }}</span>

@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from casefile.agents import SourceDocument, run_review
+from casefile.canonical import JsonValue
 from casefile.executor import Runner
 from casefile.fakes import FakeDestination, FakeModel, Ledger
 from casefile.generator import generate
@@ -145,3 +146,32 @@ def test_document_text_is_escaped(tmp_path: Path) -> None:
         page = client.get("/cases/SYN-HTML").text
     assert "<script>alert(1)</script>" not in page
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
+
+
+def priced_model(request: JsonValue) -> JsonValue:
+    """The stand-in's answer, with usage as a priced provider would report it."""
+    answer = reference_model(request)
+    assert isinstance(answer, dict)
+    usage: JsonValue = {
+        "model": "m",
+        "input_tokens": 1000,
+        "output_tokens": 100,
+        "cost_microusd": 250,
+    }
+    return {**answer, "usage": usage}
+
+
+def test_the_timeline_shows_what_the_model_calls_cost(client: TestClient, tmp_path: Path) -> None:
+    page = client.get(f"/cases/{APPROVABLE.case_id}").text
+    assert "answered by the offline stand-in at no cost" in page
+
+    path = tmp_path / "priced.sqlite"
+    ledger = Ledger(tmp_path / "priced-world.sqlite")
+    documents = [SourceDocument(d.id, d.title, d.text) for d in APPROVABLE.documents]
+    with EventLog(path, clock=lambda: datetime.now(UTC)) as log:
+        run_review(Runner(log, "SYN-PRICED"), documents, priced_model, FakeDestination(ledger))
+    ledger.close()
+    with TestClient(create_app(path)) as priced:
+        page = priced.get("/cases/SYN-PRICED").text
+    assert "5 model calls, $0.0013 in total" in page
+    assert "m · 1000 in / 100 out · $0.0003" in page
