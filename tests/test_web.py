@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from casefile.agents import SourceDocument, run_review
+from casefile.agents import Budget, SourceDocument, run_review
 from casefile.canonical import JsonValue
 from casefile.executor import Runner
 from casefile.fakes import FakeDestination, FakeModel, Ledger
@@ -175,3 +175,18 @@ def test_the_timeline_shows_what_the_model_calls_cost(client: TestClient, tmp_pa
         page = priced.get("/cases/SYN-PRICED").text
     assert "5 model calls, $0.0013 in total" in page
     assert "m · 1000 in / 100 out · $0.0003" in page
+
+
+def test_a_stopped_case_says_why_and_needs_a_human(tmp_path: Path) -> None:
+    path = tmp_path / "stopped.sqlite"
+    ledger = Ledger(tmp_path / "stopped-world.sqlite")
+    documents = [SourceDocument(d.id, d.title, d.text) for d in APPROVABLE.documents]
+    with EventLog(path, clock=lambda: datetime.now(UTC)) as log:
+        model = FakeModel(ledger, reference_model)
+        runner = Runner(log, "SYN-STOPPED")
+        run_review(runner, documents, model, FakeDestination(ledger), Budget(max_model_calls=1))
+    ledger.close()
+    with TestClient(create_app(path)) as stopped:
+        page = stopped.get("/cases/SYN-STOPPED").text
+    assert "Stopped early: model call limit reached (1 of 1)" in page
+    assert "Recommended: needs human" in page

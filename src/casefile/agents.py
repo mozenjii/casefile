@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from casefile.canonical import JsonValue
 from casefile.executor import Call, Destination, Runner, StepContext
+from casefile.money import dollars
 from casefile.quotes import coerce, read_in_context
 from casefile.rules import (
     CRITERION_TEXT,
@@ -155,53 +156,140 @@ def _locate(text: str, item: _Fact, expected: str | int | bool) -> tuple[int, in
     return starts[0], starts[0] + width
 
 
+@dataclass(frozen=True)
+class Budget:
+    """Per-case limits, checked by the supervisor before every step that calls a model.
+
+    Spend includes the estimated cost of calls lost in a crash (see ``CaseState.spent_microusd``).
+    A cost limit with no known price cannot be enforced, so it stops the run instead of guessing.
+    """
+
+    max_model_calls: int | None = None
+    max_cost_microusd: int | None = None
+
+    def refuses(self, state: CaseState, next_call_estimate: int | None) -> str | None:
+        """Say why one more model call would break the budget, or None if it fits."""
+        if self.max_model_calls is not None and state.model_calls + 1 > self.max_model_calls:
+            return f"model call limit reached ({state.model_calls} of {self.max_model_calls})"
+        if self.max_cost_microusd is not None:
+            if next_call_estimate is None or state.cost_unknown:
+                return "a cost limit is set but the model's price is unknown"
+            if state.spent_microusd + next_call_estimate > self.max_cost_microusd:
+                spent, limit = dollars(state.spent_microusd), dollars(self.max_cost_microusd)
+                return f"cost limit reached ({spent} spent of {limit})"
+        return None
+
+
 def run_review(
     runner: Runner,
     documents: Sequence[SourceDocument],
     model: Call,
     destination: Destination,
+    budget: Budget | None = None,
 ) -> CaseState:
-    """Run (or resume) the automated review of one case to its dossier and return the state."""
+    """Run (or resume) the automated review of one case to its dossier and return the state.
+
+    With a ``budget``, a step that would break it is not started: the run records why, and the case
+    ends as "needs a human" with whatever was found so far. Nothing unfinished is ever approved.
+    """
     runner.open({"documents": [{"id": d.id, "title": d.title, "text": d.text} for d in documents]})
+    limits = budget or Budget()
 
     extracted: list[JsonValue] = []
     rejected: list[JsonValue] = []
     for document in documents:
-        output = runner.step(f"extract/{document.id}", _extractor(document, model))
+        step = f"extract/{document.id}"
+        if _stopped(runner, limits, step, _extract_request(document)):
+            return _stop(runner, extracted, rejected)
+        output = runner.step(step, _extractor(document, model))
         extracted += _list(output, "observations")
         rejected += _list(output, "rejected")
 
     policy = runner.step("policy/1", lambda _: _policy(extracted))
     gaps = runner.step("gaps/1", lambda ctx: _gaps(ctx, runner.state.case_id, policy, destination))
+    if _stopped(runner, limits, "draft/1", _write_request(policy, gaps)):
+        return _stop(runner, extracted, rejected, policy, gaps)
     draft = runner.step("draft/1", lambda ctx: _writer(ctx, policy, gaps, extracted, model))
 
-    ledger: dict[str, JsonValue] = {}
-    for item in extracted:
-        if isinstance(item, dict):
-            ledger[str(item["evidence"])] = {
-                key: item[key] for key in ("fact", "value", "document", "start", "end", "quote")
-            }
     dossier: dict[str, JsonValue] = {
         "recommendation": _field(policy, "recommendation"),
         "summary": _field(draft, "summary"),
         "criteria": _field(policy, "criteria"),
         "claims": _field(draft, "claims"),
         "requests": _field(gaps, "requests"),
-        "evidence": ledger,
+        "evidence": _ledger(extracted),
         "rejected": {"observations": rejected, "claims": _field(draft, "rejected")},
     }
     return runner.complete(dossier)
+
+
+def _stopped(runner: Runner, budget: Budget, step: str, request: JsonValue) -> bool:
+    """Check the budget before a model step; record the stop if it refuses. Replays exactly."""
+    state = runner.state
+    if state.stopped is not None:
+        return True
+    if step in state.outputs:
+        return False  # already done: a resumed run never re-decides a finished step
+    reason = budget.refuses(state, runner.estimate(request))
+    if reason is None:
+        return False
+    runner.stop(reason)
+    return True
+
+
+def _stop(
+    runner: Runner,
+    extracted: list[JsonValue],
+    rejected: list[JsonValue],
+    policy: JsonValue = None,
+    gaps: JsonValue = None,
+) -> CaseState:
+    """End the case early as "needs a human", with everything found so far."""
+    reason = runner.state.stopped or "stopped"
+    dossier: dict[str, JsonValue] = {
+        "recommendation": "needs_human",
+        "summary": f"Stopped before finishing: {reason}. A person must review the documents.",
+        "criteria": _field(policy, "criteria") if policy is not None else [],
+        "claims": [],
+        "requests": _field(gaps, "requests") if gaps is not None else [],
+        "evidence": _ledger(extracted),
+        "rejected": {"observations": rejected, "claims": []},
+        "stopped": reason,
+    }
+    return runner.complete(dossier)
+
+
+def _ledger(extracted: list[JsonValue]) -> dict[str, JsonValue]:
+    """The evidence ledger: each grounded observation by its evidence id."""
+    ledger: dict[str, JsonValue] = {}
+    for item in extracted:
+        if isinstance(item, dict):
+            ledger[str(item["evidence"])] = {
+                key: item[key] for key in ("fact", "value", "document", "start", "end", "quote")
+            }
+    return ledger
+
+
+def _extract_request(document: SourceDocument) -> dict[str, JsonValue]:
+    """The model request that extracts one document."""
+    return {"task": "extract", "document": document.id, "text": document.text}
+
+
+def _write_request(policy: JsonValue, gaps: JsonValue) -> dict[str, JsonValue]:
+    """The model request that drafts the dossier from the rules' result."""
+    return {
+        "task": "write",
+        "recommendation": _field(policy, "recommendation"),
+        "criteria": _field(policy, "criteria"),
+        "requests": _field(gaps, "requests"),
+    }
 
 
 def _extractor(document: SourceDocument, model: Call) -> Callable[[StepContext], JsonValue]:
     """Build the step body that extracts one document, retrying once after a rejection."""
 
     def extract(ctx: StepContext) -> JsonValue:
-        request: dict[str, JsonValue] = {
-            "task": "extract",
-            "document": document.id,
-            "text": document.text,
-        }
+        request = _extract_request(document)
         kept, rejected = ground(document, ctx.call("model", request, model))
         if rejected:
             # One retry, told what was wrong. Both attempts are recorded, so replay is exact.
@@ -258,12 +346,7 @@ def _writer(
     model: Call,
 ) -> JsonValue:
     """Draft the summary and claims, dropping any claim that cites evidence that does not exist."""
-    request: dict[str, JsonValue] = {
-        "task": "write",
-        "recommendation": _field(policy, "recommendation"),
-        "criteria": _field(policy, "criteria"),
-        "requests": _field(gaps, "requests"),
-    }
+    request = _write_request(policy, gaps)
     try:
         draft = _Draft.model_validate(ctx.call("model", request, model))
     except ValidationError as error:

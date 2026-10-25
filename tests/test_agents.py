@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from casefile.agents import SourceDocument, ground, run_review
+from casefile.agents import Budget, SourceDocument, ground, run_review
 from casefile.canonical import JsonValue
 from casefile.executor import Call, Runner
 from casefile.fakes import FakeDestination, FakeModel, Ledger
@@ -334,3 +334,73 @@ def test_reported_values_are_normalised_to_the_fact_type(
     fact: str, value: str | int | bool, expected: object
 ) -> None:
     assert coerce(fact, value) == expected
+
+
+def budgeted(
+    world: tuple[EventLog, Ledger], case: Case, budget: Budget, estimate: int | None = 250
+) -> CaseState:
+    """Run ``case`` under ``budget``, pricing every model request at ``estimate``."""
+    log, ledger = world
+    runner = Runner(log, case.case_id, estimate=lambda _: estimate)
+    model = FakeModel(ledger, reference_model)
+    return run_review(runner, sources(case), model, FakeDestination(ledger), budget)
+
+
+def test_a_call_limit_stops_the_run_with_what_was_found(world: tuple[EventLog, Ledger]) -> None:
+    case = generate(12, "none")
+    state = budgeted(world, case, Budget(max_model_calls=2))
+    result = dossier(state)
+    assert result["recommendation"] == "needs_human"
+    assert result["stopped"] == "model call limit reached (2 of 2)"
+    assert state.stopped == "model call limit reached (2 of 2)"
+    ledger = result["evidence"]
+    assert isinstance(ledger, dict)
+    assert {str(item["document"]) for item in ledger.values() if isinstance(item, dict)} == {
+        "form",
+        "note",
+    }
+    assert world[1].model_calls() == 2
+    assert [e.type for e in world[0].read(case.case_id)][-2:] == [
+        "BudgetExhausted",
+        "CaseCompleted",
+    ]
+
+
+def test_a_cost_limit_counts_what_was_spent(world: tuple[EventLog, Ledger]) -> None:
+    case = generate(13, "none")
+    state = budgeted(world, case, Budget(max_cost_microusd=600), estimate=250)
+    assert state.stopped is not None
+    assert state.stopped.startswith("cost limit reached")
+    assert state.model_calls == 2
+
+
+def test_a_cost_limit_without_a_price_fails_closed(world: tuple[EventLog, Ledger]) -> None:
+    state = budgeted(world, generate(14, "none"), Budget(max_cost_microusd=10_000), estimate=None)
+    assert state.stopped == "a cost limit is set but the model's price is unknown"
+    assert world[1].model_calls() == 0
+
+
+def test_a_budget_that_is_never_reached_changes_nothing(world: tuple[EventLog, Ledger]) -> None:
+    case = generate(15, "none")
+    state = budgeted(world, case, Budget(max_model_calls=50, max_cost_microusd=1_000_000))
+    assert state.stopped is None
+    assert dossier(state)["recommendation"] == "approve"
+
+
+def test_a_stopped_case_resumes_to_the_same_stop(world: tuple[EventLog, Ledger]) -> None:
+    case = generate(16, "none")
+    first = budgeted(world, case, Budget(max_model_calls=1))
+    assert budgeted(world, case, Budget(max_model_calls=1)) == first
+    assert budgeted(world, case, Budget(max_model_calls=99)) == first
+
+
+def test_a_limit_can_stop_the_draft_after_the_rules_ran(world: tuple[EventLog, Ledger]) -> None:
+    case = generate(17, "missing_xray")
+    result = dossier(budgeted(world, case, Budget(max_model_calls=3)))
+    assert result["recommendation"] == "needs_human"
+    criteria = result["criteria"]
+    assert isinstance(criteria, list)
+    assert len(criteria) == 5
+    assert result["requests"] == [
+        "Knee X-ray within 90 days before the request (not documented: xray_date)"
+    ]

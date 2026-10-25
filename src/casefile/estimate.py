@@ -25,8 +25,11 @@ from casefile.fakes import FakeDestination, Ledger
 from casefile.generator import Case
 from casefile.llm import Settings
 from casefile.log import EventLog
+from casefile.money import dollars
 from casefile.prompts import extract_prompt, write_prompt
 from casefile.reference_model import reference_model
+
+__all__ = ["CHARS_PER_TOKEN", "Estimate", "dollars", "estimate_cases"]
 
 CHARS_PER_TOKEN = 4
 """Rule-of-thumb characters per token for English text."""
@@ -118,11 +121,3 @@ def _as_quotes(request: dict[str, JsonValue], answer: JsonValue) -> JsonValue:
         for row in rows
     ]
     return {"observations": quoted}
-
-
-def dollars(microusd: int | None) -> str:
-    """Format micro-dollars for people: ``$0.0021``, ``$12.40``, or ``unknown``."""
-    if microusd is None:
-        return "unknown"
-    value = microusd / 1_000_000
-    return f"${value:,.4f}" if value < 1 else f"${value:,.2f}"

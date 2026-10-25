@@ -57,6 +57,7 @@ summary { cursor: pointer; font-weight: 600; }
 </header>
 <main class="wrap">
   {% if error %}<p class="flash error" role="alert">{{ error }}</p>{% endif %}
+  {% if dossier.stopped %}<p class="flash error" role="status">Stopped early: {{ dossier.stopped }}. The documents need a person's review.</p>{% endif %}
   {% if notice %}<p class="flash" role="status">{{ notice }}</p>{% endif %}
   <div class="grid">
     <section class="panel" aria-labelledby="dossier-h">

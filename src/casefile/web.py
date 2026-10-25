@@ -27,9 +27,9 @@ from markupsafe import Markup, escape
 
 from casefile.canonical import JsonValue
 from casefile.cases import load
-from casefile.estimate import dollars
 from casefile.events import Event
 from casefile.log import AppendConflict, EventLog
+from casefile.money import dollars
 from casefile.review import NotReviewable, Review, ReviewView
 from casefile.state import DECISIONS, FoldError
 
