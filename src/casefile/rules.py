@@ -271,3 +271,6 @@ CRITERION_TEXT: Mapping[str, str] = {
     "X1": "No MRI of this knee in the last year",
 }
 """What each criterion asks, for the dossier and the review screen."""
+
+IF_NOT_MET: Mapping[str, Recommendation] = {item.id: item.if_not_met for item in CRITERIA}
+"""What failing each criterion costs: deny, or ask for more information."""

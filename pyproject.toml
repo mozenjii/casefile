@@ -4,7 +4,9 @@ version = "0.0.0"
 description = "A durable, human-in-the-loop workflow for reviewing synthetic prior-authorization cases."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "pydantic>=2.9",
+]
 
 [dependency-groups]
 dev = [
