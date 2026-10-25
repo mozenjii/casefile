@@ -2,7 +2,7 @@
 
 A workflow for reviewing healthcare authorization cases with AI helpers. It survives crashes, stays inside a budget, and never releases a decision without a human sign-off.
 
-> **Status:** early. The durable core works (the event log, the step executor with its outbox, and the crash matrix, run on a small toy case), and so do approvals and the real-data scan. There are no agents, budgets or review screen yet. A result appears in the table below only once a script in this repo produces it. All cases are synthetic; no real patient or claim data is used anywhere in this repo.
+> **Status:** early, and working end to end on synthetic cases: generated case → specialists → rules → dossier → review screen → approval → release, on a durable event log. The model behind the specialists is a deterministic stand-in with the same JSON interface a real model will have, so nothing here measures model quality yet. Budgets, fault injection on the full workflow and the baseline comparison come next. A result appears in the table below only once a script in this repo produces it. All cases are synthetic; no real patient or claim data is used anywhere in this repo.
 
 ## The problem
 
@@ -41,7 +41,11 @@ Kill the process at every step boundary and check that the resumed case ends up 
 
 **Synthetic data that's provably fake.** A scanner that flags every nine-digit number gets switched off within a week. This one knows the ranges that are never issued: SSNs with area 000 or 666, phone numbers 555-0100 to 555-0199, the example.com domains, the card networks' test numbers. The build fails on any identifier in the repo that falls outside them, and the failure names the file and line but never the value. On its first run it caught a real-looking phone number in one of my own tests.
 
-**Ground truth by construction.** A small rules engine defines the policy criteria for a made-up procedure. A generator writes the clinical documents with controlled gaps and contradictions, and the correct recommendation is computed from the rules, so every case comes with a label.
+**Unknown is not a pass.** The criteria for the made-up procedure (an MRI of one knee; invented, not clinical guidance) are evaluated with four outcomes: met, not met, unknown when nobody documented a fact, and conflict when two documents disagree. Unknowns flow through each criterion, and "a red flag *or* six weeks of therapy" uses three-valued logic, so a documented red flag settles it even when therapy is unknown. The recommendation is the most severe outcome: nothing unknown gets approved, and a definite deny isn't softened by a missing document elsewhere. The model never decides. It reads and writes; the recommendation comes from the rules.
+
+**Ground truth by construction, checked twice.** A generator turns structured facts into a request form, a clinical note, an X-ray report and a referral letter, and records the exact character span where each fact is written. Every case carries one defect (a missing or stale X-ray, a missing referral, two documents disagreeing about therapy, a red flag, a recent prior MRI, an instruction planted in a note telling the system to approve) and declares the outcome that defect should produce. The generator refuses any case where the rules engine's label disagrees with that, so a bug in either shows up immediately.
+
+**Every fact must point at its source.** When the extractor reports a fact, it has to give the character span it read. The grounding check re-reads that span independently and keeps the fact only if those words really state the value. A yes/no fact also has to sit right after its field's label, since almost any words could be read as "yes". Ungrounded facts are rejected with a reason and shown to the reviewer, and the document gets asked about once more. On the review screen every criterion links to the highlighted spans it rests on.
 
 **Honest baselines.** More agents isn't automatically better. If a fixed workflow matches the agentic version at lower cost, the write-up says so.
 
@@ -53,14 +57,19 @@ Needs Python 3.12 and [uv](https://docs.astral.sh/uv/).
 uv sync
 uv run python scripts/check.py        # format, lint, types, tests with coverage
 uv run python scripts/crash_matrix.py # the crash matrix as a table
+uv run python scripts/demo.py         # generate a case per defect, review them at http://127.0.0.1:8000
 ```
+
+The browser tests need Chromium once (`uv run playwright install chromium`), then `uv run python scripts/check.py --browser`.
+
+![The review screen: the dossier's criteria on the left, the source documents with highlighted evidence in the middle, the decision and the case's timeline on the right.](docs/review-screen.png)
 
 ## Roadmap
 
 - [x] Case state machine, event log and crash-resume tests
 - [x] Approval gates and audit trail
-- [ ] Synthetic case generator with a rules engine
-- [ ] Supervisor and specialists, review screen and timeline
+- [x] Synthetic case generator with a rules engine
+- [x] Supervisor and specialists, review screen and timeline
 - [ ] Fault injection and baseline comparison
 - [ ] Write-up
 
