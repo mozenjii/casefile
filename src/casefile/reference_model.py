@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from casefile.canonical import JsonValue
 from casefile.quotes import fields, read_quote
-from casefile.rules import FACT_TYPES
+from casefile.rules import FACT_TYPES, Observation, evaluate
 
 
 def reference_model(request: JsonValue) -> JsonValue:
@@ -28,6 +28,10 @@ def reference_model(request: JsonValue) -> JsonValue:
         return {"observations": _extract(str(request.get("text", "")))}
     if task == "write":
         return _write(request)
+    if task == "extract_case":
+        return {"observations": _extract_case(request)}
+    if task == "decide_case":
+        return _decide(request)
     raise ValueError(f"the reference model has no task {task!r}")
 
 
@@ -40,6 +44,42 @@ def _extract(text: str) -> list[JsonValue]:
             if value is not None:
                 found.append({"fact": fact, "value": value, "start": start, "end": end})
     return found
+
+
+def _extract_case(request: dict[str, JsonValue]) -> list[JsonValue]:
+    """Extract every document of a case, tagging each fact with its document id."""
+    found: list[JsonValue] = []
+    documents = request.get("documents")
+    for document in documents if isinstance(documents, list) else []:
+        if not isinstance(document, dict):
+            continue
+        for item in _extract(str(document.get("text", ""))):
+            if isinstance(item, dict):
+                found.append({"document": document.get("id"), **item})
+    return found
+
+
+def _decide(request: dict[str, JsonValue]) -> JsonValue:
+    """Decide a case the way the rules would; a real model has to reason its way there."""
+    observations = _extract_case(request)
+    decision = evaluate(
+        Observation(str(item["fact"]), _typed(item["value"]), f"{item['document']}:{item['fact']}")
+        for item in observations
+        if isinstance(item, dict)
+    )
+    reasons: list[JsonValue] = [f"{r.id}: {r.reason}" for r in decision.results]
+    return {
+        "recommendation": decision.recommendation.value,
+        "reasons": reasons,
+        "observations": observations,
+    }
+
+
+def _typed(value: JsonValue) -> str | int | bool:
+    """Narrow an extracted value to what the rules read."""
+    if isinstance(value, str | int | bool):
+        return value
+    raise ValueError(f"unexpected value {value!r}")
 
 
 def _write(request: dict[str, JsonValue]) -> JsonValue:

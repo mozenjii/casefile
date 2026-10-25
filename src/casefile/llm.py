@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from casefile.canonical import JsonValue, canonical_json
-from casefile.prompts import Prompt, extract_prompt, write_prompt
+from casefile.prompts import PROMPTS
 from casefile.reference_model import reference_model
 
 if TYPE_CHECKING:
@@ -67,7 +67,7 @@ class Preset:
 
 
 PRESETS: Mapping[str, Preset] = {
-    "reference": Preset("reference", model="reference"),
+    "reference": Preset("reference", model="reference", price_input=0.0, price_output=0.0),
     # Recommended for most users: one key reaches many hosts. Default model and its price were
     # read from OpenRouter's public model list on 2026-10-25; override both if they have moved.
     "openrouter": Preset(
@@ -302,13 +302,10 @@ class LanguageModel:
         if not isinstance(request, dict):
             raise ValueError("a model request is a JSON object")
         task = request.get("task")
-        prompts: dict[object, Callable[[dict[str, JsonValue]], Prompt]] = {
-            "extract": extract_prompt,
-            "write": write_prompt,
-        }
-        if task not in prompts:
+        build = PROMPTS.get(str(task))
+        if build is None:
             raise ValueError(f"no prompt for task {task!r}")
-        system, user, schema = prompts[task](request)
+        system, user, schema = build(request)
         completion = self._backend.complete(system, user, schema)
         usage: dict[str, JsonValue] = {
             "model": completion.model,

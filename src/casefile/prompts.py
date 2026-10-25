@@ -130,3 +130,82 @@ def write_prompt(request: dict[str, JsonValue]) -> Prompt:
     decided = {key: request.get(key) for key in ("recommendation", "criteria", "requests")}
     user = json.dumps(decided, indent=2, ensure_ascii=False)
     return WRITE_SYSTEM, user, WRITE_SCHEMA
+
+
+CASE_ITEM: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "document": {"type": "string"},
+        "fact": {"type": "string", "enum": sorted(FACT_TYPES)},
+        "value": {"type": "string"},
+        "quote": {"type": "string"},
+    },
+    "required": ["document", "fact", "value", "quote"],
+    "additionalProperties": False,
+}
+
+EXTRACT_CASE_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {"observations": {"type": "array", "items": CASE_ITEM}},
+    "required": ["observations"],
+    "additionalProperties": False,
+}
+
+EXTRACT_CASE_SYSTEM = EXTRACT_SYSTEM.replace(
+    "from one document in", "from every document in"
+).replace(
+    '- "fact": the fact\'s name,',
+    '- "document": the id of the document it is in,\n- "fact": the fact\'s name,',
+)
+
+DECIDE_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "recommendation": {"type": "string", "enum": ["approve", "request_info", "deny"]},
+        "reasons": {"type": "array", "items": {"type": "string"}},
+        "observations": {"type": "array", "items": CASE_ITEM},
+    },
+    "required": ["recommendation", "reasons", "observations"],
+    "additionalProperties": False,
+}
+
+DECIDE_SYSTEM = EXTRACT_CASE_SYSTEM.replace(
+    "Reply with JSON only.",
+    """Then decide the case yourself against these criteria (synthetic, not clinical guidance):
+- C1: symptoms for at least 6 weeks before the request; if not, deny.
+- C2: at least 6 weeks of conservative therapy, or a documented red flag; if not, deny.
+- C3: a knee X-ray within 90 days before the request; if not, request information.
+- C4: a referral on file; if not, request information.
+- X1: no MRI of this knee in the 365 days before the request; if there was, deny.
+Anything not documented, or documented differently in two places, means request information.
+Deny wins over request information, which wins over approve. Never approve on missing evidence.
+
+Return "recommendation", one short "reasons" entry per criterion, and the "observations" you
+relied on. Reply with JSON only.""",
+)
+
+
+def _documents_json(request: dict[str, JsonValue]) -> str:
+    """Every document of a case, JSON-encoded so none can close the fence."""
+    return json.dumps({"documents": request.get("documents", [])}, ensure_ascii=False)
+
+
+def extract_case_prompt(request: dict[str, JsonValue]) -> Prompt:
+    """The fixed workflow's single extraction call over all of a case's documents."""
+    facts = "\n".join(f"- {name}: {meaning}" for name, meaning in FACT_GUIDE.items())
+    return EXTRACT_CASE_SYSTEM.format(facts=facts), _documents_json(request), EXTRACT_CASE_SCHEMA
+
+
+def decide_prompt(request: dict[str, JsonValue]) -> Prompt:
+    """The single agent's one call: read everything and decide."""
+    facts = "\n".join(f"- {name}: {meaning}" for name, meaning in FACT_GUIDE.items())
+    return DECIDE_SYSTEM.format(facts=facts), _documents_json(request), DECIDE_SCHEMA
+
+
+PROMPTS = {
+    "extract": extract_prompt,
+    "write": write_prompt,
+    "extract_case": extract_case_prompt,
+    "decide_case": decide_prompt,
+}
+"""Every task a model is asked to do, and how its prompt is built."""

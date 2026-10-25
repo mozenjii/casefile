@@ -20,7 +20,7 @@ def test_the_estimate_is_priced_with_the_run_settings() -> None:
     result = Estimate(cases=1, calls=5, input_tokens=2_000, output_tokens=300)
     openrouter = settings_from_env({"CASEFILE_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "x"})
     assert result.cost_microusd(openrouter) == round(2_000 * 0.209 + 300 * 0.418)
-    assert result.cost_microusd(settings_from_env({})) is None
+    assert result.cost_microusd(settings_from_env({})) == 0  # the offline stand-in is free
 
 
 def test_estimates_add_up() -> None:

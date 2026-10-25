@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,10 +27,10 @@ from casefile.generator import Case
 from casefile.llm import Settings
 from casefile.log import EventLog
 from casefile.money import dollars
-from casefile.prompts import extract_prompt, write_prompt
+from casefile.prompts import PROMPTS
 from casefile.reference_model import reference_model
 
-__all__ = ["CHARS_PER_TOKEN", "Estimate", "dollars", "estimate_cases"]
+__all__ = ["CHARS_PER_TOKEN", "Estimate", "dollars", "estimate_cases", "estimator"]
 
 CHARS_PER_TOKEN = 4
 """Rule-of-thumb characters per token for English text."""
@@ -87,7 +88,7 @@ class _Recorder:
         """Answer the request and add its prompt and answer sizes."""
         if not isinstance(request, dict):
             raise ValueError("a model request is a JSON object")
-        build = extract_prompt if request.get("task") == "extract" else write_prompt
+        build = PROMPTS[str(request.get("task"))]
         system, user, schema = build(request)
         answer = reference_model(request)
         self.calls += 1
@@ -121,3 +122,28 @@ def _as_quotes(request: dict[str, JsonValue], answer: JsonValue) -> JsonValue:
         for row in rows
     ]
     return {"observations": quoted}
+
+
+ASSUMED_OUTPUT_TOKENS = 400
+"""Output a single call is assumed to produce when pricing it before it is made."""
+
+
+def estimator(settings: Settings) -> Callable[[JsonValue], int | None]:
+    """Price one model request before it is sent, for budgets and the write-ahead of each call.
+
+    Input tokens come from the exact prompt the provider would receive; output is assumed at
+    ``ASSUMED_OUTPUT_TOKENS``. None when the provider has no price, which a cost limit treats as a
+    reason to stop rather than guess.
+    """
+
+    def price(request: JsonValue) -> int | None:
+        if not isinstance(request, dict):
+            return None
+        build = PROMPTS.get(str(request.get("task")))
+        if build is None:
+            return None
+        system, user, schema = build(request)
+        chars = len(system) + len(user) + len(json.dumps(schema))
+        return settings.cost(-(-chars // CHARS_PER_TOKEN), ASSUMED_OUTPUT_TOKENS)
+
+    return price
