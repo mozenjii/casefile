@@ -2,7 +2,7 @@
 
 A workflow for reviewing healthcare authorization cases with AI helpers. It survives crashes, stays inside a budget, and never releases a decision without a human sign-off.
 
-> **Status:** early, and working end to end on synthetic cases: generated case → specialists → rules → dossier → review screen → approval → release, on a durable event log. The model behind the specialists is a deterministic stand-in with the same JSON interface a real model will have, so nothing here measures model quality yet. Budgets, fault injection on the full workflow and the baseline comparison come next. A result appears in the table below only once a script in this repo produces it. All cases are synthetic; no real patient or claim data is used anywhere in this repo.
+> **Status:** early, and working end to end on synthetic cases: generated case → specialists → rules → dossier → review screen → approval → release, on a durable event log. Out of the box the specialists run on a deterministic offline stand-in, so nothing here measures model quality yet. Real models plug in with two environment variables (see [Using a real model](docs/MODELS.md)). Budgets, fault injection on the full workflow and the baseline comparison come next. A result appears in the table below only once a script in this repo produces it. All cases are synthetic; no real patient or claim data is used anywhere in this repo.
 
 ## The problem
 
@@ -45,6 +45,8 @@ Kill the process at every step boundary and check that the resumed case ends up 
 
 **Ground truth by construction, checked twice.** A generator turns structured facts into a request form, a clinical note, an X-ray report and a referral letter, and records the exact character span where each fact is written. Every case carries one defect (a missing or stale X-ray, a missing referral, two documents disagreeing about therapy, a red flag, a recent prior MRI, an instruction planted in a note telling the system to approve) and declares the outcome that defect should produce. The generator refuses any case where the rules engine's label disagrees with that, so a bug in either shows up immediately.
 
+**Any model, same guarantees.** The specialists talk to models through one interface. Behind it are the stand-in, Claude through its official SDK (structured JSON output, a server-side fallback when a request is refused), and any OpenAI-compatible endpoint, which covers the hosts that serve open-weights models cheaply. Every answer is recorded with its token count and cost in the case's log, so a crash never pays twice, and answers are cached so rerunning the same cases is free. All of this is tested through the real SDKs with the network replaced, so no key is ever needed to run the tests.
+
 **Every fact must point at its source.** When the extractor reports a fact, it has to give the character span it read. The grounding check re-reads that span independently and keeps the fact only if those words really state the value. A yes/no fact also has to sit right after its field's label, since almost any words could be read as "yes". Ungrounded facts are rejected with a reason and shown to the reviewer, and the document gets asked about once more. On the review screen every criterion links to the highlighted spans it rests on.
 
 **Honest baselines.** More agents isn't automatically better. If a fixed workflow matches the agentic version at lower cost, the write-up says so.
@@ -59,6 +61,8 @@ uv run python scripts/check.py        # format, lint, types, tests with coverage
 uv run python scripts/crash_matrix.py # the crash matrix as a table
 uv run python scripts/demo.py         # generate a case per defect, review them at http://127.0.0.1:8000
 ```
+
+**Using a real model.** Set `CASEFILE_PROVIDER` and a key (copy `.env.example` to `.env`). OpenRouter with an open-weights model is the recommended default, at roughly $0.0006 per case; Claude Opus 5.5 is the high-quality option; any OpenAI-compatible server works. `uv run python scripts/estimate_cost.py` prices a run before anything is sent. Details in [docs/MODELS.md](docs/MODELS.md).
 
 The browser tests need Chromium once (`uv run playwright install chromium`), then `uv run python scripts/check.py --browser`.
 
