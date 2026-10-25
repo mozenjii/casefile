@@ -90,3 +90,9 @@ def test_a_label_that_contradicts_its_defect_is_refused(monkeypatch: pytest.Monk
     monkeypatch.setitem(DEFECTS, "none", Recommendation.DENY)
     with pytest.raises(AssertionError, match="rules say approve, the defect declares deny"):
         generate(1, "none")
+
+
+def test_a_case_id_does_not_give_away_the_defect() -> None:
+    for case in generate_set(9):
+        assert case.defect.replace("_", "-").upper() not in case.case_id
+        assert len(case.case_id) == len("SYN-") + 8

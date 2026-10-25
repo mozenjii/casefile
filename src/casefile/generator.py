@@ -21,6 +21,7 @@ import random
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
+from casefile.canonical import sha256_hex
 from casefile.rules import Decision, Observation, Recommendation, evaluate
 
 DEFECTS: dict[str, Recommendation] = {
@@ -153,7 +154,8 @@ def generate(seed: int, defect: str) -> Case:
             f"seed {seed} defect {defect}: rules say {label.recommendation}, "
             f"the defect declares {DEFECTS[defect]}"
         )
-    case_id = f"SYN-{seed:04d}-{defect.replace('_', '-').upper()}"
+    # Opaque on purpose: an id that named the defect would tell the reviewer the answer.
+    case_id = "SYN-" + sha256_hex(f"{seed}:{defect}".encode())[:8].upper()
     return Case(case_id, defect, documents, evidence, observations, label)
 
 
