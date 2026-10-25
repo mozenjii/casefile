@@ -53,8 +53,13 @@ and cost of every call once a case has run.
 
 ## What happens on a call
 
-- **Prompts.** Each document goes to the extractor fenced as data. The model is told to ignore any
-  instruction inside it, and it never sees the decision rules' output until the writing step.
+- **Prompts.** Each document goes to the extractor JSON-encoded, so nothing inside it can close the
+  fence. The model is told to ignore any instruction inside it, and it never decides: the rules do.
+- **Checks.** A fact counts only if its quote is the whole value of that fact's field in the
+  document, and every field the model leaves out is added back and flagged to the reviewer.
+- **Budgets.** Call and cost limits are checked before each step. A cost limit with no known price
+  stops the run rather than guessing. With Claude, a refused request can be answered by the
+  fallback model, which is billed at its own rate while the estimate here uses the configured one.
 - **Output.** Claude gets a JSON schema it must follow (structured outputs). OpenAI-compatible hosts
   get JSON mode, with the schema stated in the prompt. A reply that still isn't valid is recorded
   and rejected, never guessed at.
