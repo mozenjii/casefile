@@ -223,14 +223,4 @@ copy `.env.example` to `.env` and see [docs/MODELS.md](docs/MODELS.md).
 - [ ] Comparison run on a real model
 - [ ] Synthetic cases reviewed by a healthcare or claims professional
 
-## Related projects
-
-Part of a set of six projects about building LLM systems you can trust:
-[evalgate](https://github.com/mozenjii/evalgate),
-[policylens](https://github.com/mozenjii/policylens),
-[docproof](https://github.com/mozenjii/docproof),
-[tollgate](https://github.com/mozenjii/tollgate),
-[redline](https://github.com/mozenjii/redline),
-[casefile](https://github.com/mozenjii/casefile).
-
 Built by Mohib Ahmad.
