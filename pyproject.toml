@@ -16,6 +16,7 @@ dependencies = [
 dev = [
     "httpx2>=2.16.0",
     "hypothesis>=6.120",
+    "playwright>=1.48",
     "pyright>=1.1.390",
     "pytest>=8.3",
     "pytest-cov>=6.0",
@@ -71,7 +72,8 @@ extraPaths = ["scripts"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["scripts"]
-addopts = ["--strict-markers", "--strict-config", "-ra"]
+addopts = ["--strict-markers", "--strict-config", "-ra", "-m", "not browser"]
+markers = ["browser: drives a real browser; run with scripts/check.py --browser"]
 filterwarnings = ["error"]
 
 [tool.coverage.run]

@@ -4,6 +4,7 @@ Usage, from the repository root::
 
     uv run python scripts/check.py           # the local gates
     uv run python scripts/check.py --audit   # plus the dependency audit, which needs the network
+    uv run python scripts/check.py --browser # plus the browser tests (needs: playwright install)
 
 CI runs the second form, so a change that passes locally fails in CI only for a dependency
 advisory or a platform difference, never because the two run different checks.
@@ -83,7 +84,7 @@ def audit_dependencies() -> bool:
         )
 
 
-def gates(include_audit: bool) -> list[tuple[str, Callable[[], bool]]]:
+def gates(include_audit: bool, include_browser: bool) -> list[tuple[str, Callable[[], bool]]]:
     """Return the gates in the order they run: fastest and most common failures first."""
     python = sys.executable
     selected: list[tuple[str, Callable[[], bool]]] = [
@@ -104,6 +105,9 @@ def gates(include_audit: bool) -> list[tuple[str, Callable[[], bool]]]:
         ("types", lambda: run(python, "-m", "pyright")),
         ("tests", lambda: run(python, "-m", "pytest", "--cov", "--cov-report=term-missing")),
     ]
+    if include_browser:
+        browser = ("-m", "browser", "--no-cov", "-p", "no:cacheprovider")
+        selected.append(("browser", lambda: run(python, "-m", "pytest", *browser)))
     if include_audit:
         selected.append(("dependency audit", audit_dependencies))
     return selected
@@ -113,9 +117,10 @@ def main() -> int:
     """Run the gates and return the process exit code: 0 when every gate passed, 1 otherwise."""
     parser = argparse.ArgumentParser(description="Run every gate this repository enforces.")
     parser.add_argument("--audit", action="store_true", help="also audit dependencies (network)")
+    parser.add_argument("--browser", action="store_true", help="also drive the UI in Chromium")
     arguments = parser.parse_args()
 
-    for name, gate in gates(arguments.audit):
+    for name, gate in gates(arguments.audit, arguments.browser):
         print(f"== {name}", flush=True)
         started = time.perf_counter()
         passed = gate()
